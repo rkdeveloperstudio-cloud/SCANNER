@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>RKSCAN PWA – Invoice Scanner</title>
+  <meta name="theme-color" content="#1a1a2e" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f1a; color: #e0e0e0; min-height: 100vh;
+      padding: 12px; padding-bottom: 80px;
+    }
+    h1 { font-size: 1.2rem; color: #e94560; margin-bottom: 2px; }
+    .sub { font-size: 0.75rem; color: #888; margin-bottom: 12px; }
+    .card {
+      background: #1a1a2e; border-radius: 12px; padding: 12px;
+      margin-bottom: 12px; border: 1px solid #2a2a4a;
+    }
+    .card h2 { font-size: 0.9rem; color: #e94560; margin-bottom: 8px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 10px 16px; border-radius: 8px; border: none; font-size: 0.9rem;
+      font-weight: 600; cursor: pointer; width: 100%; margin-bottom: 6px;
+    }
+    .btn:active { opacity: 0.7; }
+    .btn:disabled { opacity: 0.4; }
+    .btn-primary { background: #e94560; color: #fff; }
+    .btn-secondary { background: #16213e; color: #e0e0e0; border: 1px solid #2a2a4a; }
+    .btn-success { background: #2ecc71; color: #fff; }
+    .row { display: flex; gap: 8px; }
+    .row .btn { flex: 1; }
+    #videoPreview, #photoPreview, #canvasOutput {
+      width: 100%; border-radius: 8px; background: #000; display: block;
+      margin-top: 8px;
+    }
+    #canvasOutput { background: #fff; display: none; }
+    #photoPreview { display: none; }
+    #ocrText {
+      width: 100%; min-height: 80px; background: #0f0f1a; color: #e0e0e0;
+      border: 1px solid #2a2a4a; border-radius: 8px; padding: 8px;
+      font-family: monospace; font-size: 0.8rem; margin-top: 6px;
+    }
+    .status { font-size: 0.75rem; color: #888; margin-top: 6px; text-align: center; }
+    .status.ok { color: #2ecc71; }
+    .status.err { color: #e94560; }
+    .hidden { display: none !important; }
+    #selectionInfo { font-size: 0.7rem; color: #888; margin-top: 4px; }
+  </style>
+</head>
+<body>
+
+<h1>📄 RKSCAN PWA</h1>
+<p class="sub">Capture → Correct → OCR → Select Columns → Export</p>
+
+<!-- Camera -->
+<div class="card">
+  <h2>1. Capture Invoice</h2>
+  <video id="videoPreview" autoplay playsinline muted></video>
+  <img id="photoPreview" alt="Captured" />
+  <canvas id="canvasOutput"></canvas>
+  <div class="row" style="margin-top: 8px;">
+    <button class="btn btn-primary" id="startCamBtn">📷 Open Camera</button>
+    <button class="btn btn-success" id="captureBtn" disabled>📸 Capture</button>
+  </div>
+</div>
+
+<!-- OCR + Manual Selection -->
+<div class="card" id="ocrCard" style="display: none;">
+  <h2>2. OCR & Manual Column Select</h2>
+  <button class="btn btn-primary" id="ocrBtn">🔍 Run Full OCR</button>
+  <textarea id="ocrText" placeholder="OCR text will appear here..."></textarea>
+  <div class="status" id="ocrStatus"></div>
+
+  <hr style="border-color: #2a2a4a; margin: 10px 0;" />
+
+  <h2 style="font-size: 0.85rem;">Manual Column Extraction</h2>
+  <p style="font-size: 0.7rem; color: #888; margin-bottom: 6px;">
+    Draw a rectangle on the corrected image below, then click "Extract This Column".
+    Each extraction becomes one column in Excel.
+  </p>
+  <canvas id="selectCanvas" style="width:100%; border-radius:8px; background:#fff; display:block; margin-top:6px;"></canvas>
+  <div id="selectionInfo">No selection.</div>
+  <div class="row" style="margin-top: 6px;">
+    <button class="btn btn-secondary" id="extractColBtn" disabled>📌 Extract This Column</button>
+    <button class="btn btn-secondary" id="clearSelBtn">🗑️ Clear Selection</button>
+  </div>
+  <div id="columnList" style="font-size:0.75rem; color:#aaa; margin-top:6px;"></div>
+</div>
+
+<!-- Export -->
+<div class="card" id="exportCard" style="display: none;">
+  <h2>3. Export</h2>
+  <div class="row">
+    <button class="btn btn-secondary" id="exportExcelBtn">📊 Excel (Columns)</button>
+    <button class="btn btn-secondary" id="exportExcelFullBtn">📊 Excel (Full Text)</button>
+  </div>
+  <button class="btn btn-success" id="shareBtn" style="margin-top:6px; display:none;">📤 Share Excel</button>
+</div>
+
+<div class="status" id="globalStatus">Ready.</div>
+
+<!-- Libraries -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/scanic/dist/scanic.js"></script>
+
+<script>
+(function() {
+  'use strict';
+
+  // ---------- State ----------
+  let mediaStream = null;
+  let imageCapture = null;
+  let capturedBlob = null;
+  let correctedCanvas = null;      // The Scanic-corrected image
+  let ocrText = '';
+  let ocrWords = [];               // Word-level bbox from Tesseract
+
+  // Manual selection state
+  let selCanvas = null;
+  let selCtx = null;
+  let isDrawing = false;
+  let startX = 0, startY = 0;
+  let selRect = null;              // {x, y, w, h} in canvas pixel coords
+  let extractedColumns = [];       // Array of { name, text, rect }
+
+  const video = document.getElementById('videoPreview');
+  const photoPreview = document.getElementById('photoPreview');
+  const canvasOutput = document.getElementById('canvasOutput');
+  const ocrTextArea = document.getElementById('ocrText');
+  const ocrStatus = document.getElementById('ocrStatus');
+  const globalStatus = document.getElementById('globalStatus');
+  const selectionInfo = document.getElementById('selectionInfo');
+  const columnListEl = document.getElementById('columnList');
+
+  const startCamBtn = document.getElementById('startCamBtn');
+  const captureBtn = document.getElementById('captureBtn');
+  const ocrBtn = document.getElementById('ocrBtn');
+  const ocrCard = document.getElementById('ocrCard');
+  const exportCard = document.getElementById('exportCard');
+  const exportExcelBtn = document.getElementById('exportExcelBtn');
+  const exportExcelFullBtn = document.getElementById('exportExcelFullBtn');
+  const shareBtn = document.getElementById('shareBtn');
+  const extractColBtn = document.getElementById('extractColBtn');
+  const clearSelBtn = document.getElementById('clearSelBtn');
+
+  // ---------- PWA registration (optional) ----------
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  // ---------- Camera ----------
+  async function startCamera() {
+    try {
+      globalStatus.textContent = 'Requesting camera...';
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+      });
+      video.srcObject = mediaStream;
+      await video.play();
+
+      const track = mediaStream.getVideoTracks()[0];
+      if (typeof ImageCapture !== 'undefined') imageCapture = new ImageCapture(track);
+
+      startCamBtn.disabled = true;
+      captureBtn.disabled = false;
+      globalStatus.textContent = 'Camera ready. Point at invoice and capture.';
+      globalStatus.className = 'status ok';
+    } catch (err) {
+      globalStatus.textContent = 'Camera error: ' + err.message;
+      globalStatus.className = 'status err';
+    }
+  }
+
+  // ---------- Capture + Scanic Correction ----------
+  async function capturePhoto() {
+    try {
+      captureBtn.disabled = true;
+      globalStatus.textContent = 'Capturing...';
+
+      let blob;
+      if (imageCapture) {
+        blob = await imageCapture.takePhoto();
+      } else {
+        const c = document.createElement('canvas');
+        c.width = video.videoWidth;
+        c.height = video.videoHeight;
+        c.getContext('2d').drawImage(video, 0, 0);
+        blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+      }
+      capturedBlob = blob;
+      const url = URL.createObjectURL(blob);
+
+      // Show original first
+      photoPreview.src = url;
+      photoPreview.style.display = 'block';
+      video.style.display = 'none';
+
+      // Try Scanic correction
+      globalStatus.textContent = 'Detecting document edges...';
+      try {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+
+        if (typeof scanic !== 'undefined' && scanic.scanDocument) {
+          const result = await scanic.scanDocument(img, { mode: 'extract', output: 'canvas' });
+          if (result.success && result.output) {
+            correctedCanvas = result.output;
+            // Show corrected
+            canvasOutput.width = correctedCanvas.width;
+            canvasOutput.height = correctedCanvas.height;
+            canvasOutput.getContext('2d').drawImage(correctedCanvas, 0, 0);
+            canvasOutput.style.display = 'block';
+            photoPreview.style.display = 'none';
+            globalStatus.textContent = 'Document corrected. Ready for OCR.';
+          } else {
+            globalStatus.textContent = 'Edge detection failed, using original.';
+            correctedCanvas = null;
+          }
+        } else {
+          globalStatus.textContent = 'Scanic not loaded, using original.';
+        }
+      } catch (e) {
+        globalStatus.textContent = 'Correction skipped: ' + e.message;
+      }
+
+      ocrCard.style.display = 'block';
+      captureBtn.textContent = '🔄 Retake';
+      captureBtn.disabled = false;
+      globalStatus.className = 'status ok';
+    } catch (err) {
+      globalStatus.textContent = 'Capture error: ' + err.message;
+      globalStatus.className = 'status err';
+      captureBtn.disabled = false;
+    }
+  }
+
+  // ---------- OCR (full image + word coords) ----------
+  async function runOCR() {
+    try {
+      ocrBtn.disabled = true;
+      ocrStatus.textContent = 'Loading OCR engine...';
+      ocrStatus.className = 'status';
+
+      let sourceUrl;
+      if (correctedCanvas) {
+        sourceUrl = correctedCanvas.toDataURL('image/png');
+      } else if (capturedBlob) {
+        sourceUrl = URL.createObjectURL(capturedBlob);
+      } else {
+        throw new Error('No image');
+      }
+
+      const worker = await Tesseract.createWorker('eng');
+      ocrStatus.textContent = 'Recognizing...';
+
+      // Request TSV/word data for coordinates
+      const ret = await worker.recognize(sourceUrl, {}, { tsv: true, blocks: true, hocr: false, json: false });
+      ocrText = ret.data.text || '';
+      ocrTextArea.value = ocrText;
+
+      // Try to extract words from blocks/paragraphs/lines
+      ocrWords = [];
+      if (ret.data.blocks) {
+        for (const block of ret.data.blocks) {
+          if (!block.paragraphs) continue;
+          for (const para of block.paragraphs) {
+            if (!para.lines) continue;
+            for (const line of para.lines) {
+              if (!line.words) continue;
+              for (const w of line.words) {
+                if (w.text && w.text.trim() && w.bbox) {
+                  ocrWords.push({
+                    text: w.text.trim(),
+                    bbox: w.bbox // {x0, y0, x1, y1}
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      await worker.terminate();
+
+      ocrStatus.textContent = `OCR complete: ${ocrText.length} chars, ${ocrWords.length} words.`;
+      ocrStatus.className = 'status ok';
+      exportCard.style.display = 'block';
+      ocrBtn.disabled = false;
+
+      // Setup manual selection canvas
+      setupSelectionCanvas();
+    } catch (err) {
+      ocrStatus.textContent = 'OCR error: ' + err.message;
+      ocrStatus.className = 'status err';
+      ocrBtn.disabled = false;
+    }
+  }
+
+  // ---------- Manual Column Selection Canvas ----------
+  function setupSelectionCanvas() {
+    selCanvas = document.getElementById('selectCanvas');
+    if (!selCanvas || !correctedCanvas) return;
+
+    // Match selection canvas size to corrected image
+    selCanvas.width = correctedCanvas.width;
+    selCanvas.height = correctedCanvas.height;
+    selCtx = selCanvas.getContext('2d');
+    selCtx.drawImage(correctedCanvas, 0, 0);
+
+    // Remove old listeners by cloning
+    const newCanvas = selCanvas.cloneNode(true);
+    selCanvas.parentNode.replaceChild(newCanvas, selCanvas);
+    selCanvas = newCanvas;
+    selCtx = selCanvas.getContext('2d');
+    selCtx.drawImage(correctedCanvas, 0, 0);
+
+    // Scale display via CSS (width 100%), but coordinates use natural pixels
+    selCanvas.style.width = '100%';
+    selCanvas.style.height = 'auto';
+
+    selCanvas.addEventListener('mousedown', onSelDown);
+    selCanvas.addEventListener('mousemove', onSelMove);
+    selCanvas.addEventListener('mouseup', onSelUp);
+    selCanvas.addEventListener('touchstart', onSelDown, { passive: false });
+    selCanvas.addEventListener('touchmove', onSelMove, { passive: false });
+    selCanvas.addEventListener('touchend', onSelUp);
+
+    selRect = null;
+    extractColBtn.disabled = true;
+    selectionInfo.textContent = 'Draw a rectangle to select a column.';
+  }
+
+  function getCanvasPoint(evt) {
+    const rect = selCanvas.getBoundingClientRect();
+    const scaleX = selCanvas.width / rect.width;
+    const scaleY = selCanvas.height / rect.height;
+    let clientX, clientY;
+    if (evt.touches) {
+      clientX = evt.touches[0].clientX;
+      clientY = evt.touches[0].clientY;
+    } else {
+      clientX = evt.clientX;
+      clientY = evt.clientY;
+    }
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY
+    };
+  }
+
+  function onSelDown(e) {
+    e.preventDefault();
+    isDrawing = true;
+    const p = getCanvasPoint(e);
+    startX = p.x; startY = p.y;
+    selRect = null;
+    // Redraw base image
+    selCtx.drawImage(correctedCanvas, 0, 0);
+  }
+
+  function onSelMove(e) {
+    if (!isDrawing) return;
+    e.preventDefault();
+    const p = getCanvasPoint(e);
+    const x = Math.min(startX, p.x);
+    const y = Math.min(startY, p.y);
+    const w = Math.abs(p.x - startX);
+    const h = Math.abs(p.y - startY);
+
+    // Redraw base + rect
+    selCtx.drawImage(correctedCanvas, 0, 0);
+    selCtx.strokeStyle = '#e94560';
+    selCtx.lineWidth = 2;
+    selCtx.strokeRect(x, y, w, h);
+    selCtx.fillStyle = 'rgba(233, 69, 96, 0.1)';
+    selCtx.fillRect(x, y, w, h);
+
+    selRect = { x, y, w, h };
+    selectionInfo.textContent = `Selection: x=${Math.round(x)}, y=${Math.round(y)}, w=${Math.round(w)}, h=${Math.round(h)}`;
+    extractColBtn.disabled = (w < 10 || h < 10);
+  }
+
+  function onSelUp(e) {
+    if (!isDrawing) return;
+    isDrawing = false;
+    if (!selRect || selRect.w < 10 || selRect.h < 10) {
+      selRect = null;
+      extractColBtn.disabled = true;
+    }
+  }
+
+  // ---------- Extract Column from Selection ----------
+  function extractColumn() {
+    if (!selRect || !ocrWords.length) return;
+
+    const r = selRect;
+    const x1 = r.x, y1 = r.y, x2 = r.x + r.w, y2 = r.y + r.h;
+
+    // Filter words whose bbox center falls inside selection
+    const selectedWords = ocrWords.filter(w => {
+      const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+      const cy = (w.bbox.y0 + w.bbox.y1) / 2;
+      return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+    });
+
+    // Group into lines by y coordinate
+    selectedWords.sort((a, b) => a.bbox.y0 - b.bbox.y0 || a.bbox.x0 - b.bbox.x0);
+    const lines = [];
+    let currentLine = null;
+    for (const w of selectedWords) {
+      if (!currentLine || Math.abs(w.bbox.y0 - currentLine.y0) > 10) {
+        currentLine = { y0: w.bbox.y0, words: [w] };
+        lines.push(currentLine);
+      } else {
+        currentLine.words.push(w);
+      }
+    }
+    // Sort words within each line by x
+    for (const ln of lines) {
+      ln.words.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+      ln.text = ln.words.map(w => w.text).join(' ');
+    }
+
+    const text = lines.map(l => l.text).join('\n');
+    const colName = `Column ${extractedColumns.length + 1}`;
+    extractedColumns.push({ name: colName, text, rect: { ...r } });
+
+    // Update UI
+    columnListEl.innerHTML = extractedColumns.map(c =>
+      `• ${c.name}: ${c.text.split('\n').length} lines`
+    ).join('<br>');
+    selectionInfo.textContent = `Extracted "${colName}" (${lines.length} lines).`;
+
+    // Clear selection visual
+    selRect = null;
+    selCtx.drawImage(correctedCanvas, 0, 0);
+    extractColBtn.disabled = true;
+    exportCard.style.display = 'block';
+  }
+
+  // ---------- Export Excel (Columns) ----------
+  function exportColumnsExcel() {
+    if (!extractedColumns.length) return;
+
+    // Build a sheet where each column is one column, rows aligned by index
+    const maxLines = Math.max(...extractedColumns.map(c => c.text.split('\n').length), 0);
+    const rows = [];
+    for (let i = 0; i < maxLines; i++) {
+      const row = {};
+      extractedColumns.forEach(col => {
+        const lines = col.text.split('\n');
+        row[col.name] = lines[i] || '';
+      });
+      rows.push(row);
+    }
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Columns');
+    XLSX.writeFile(wb, 'invoice_columns.xlsx');
+    globalStatus.textContent = 'Excel (columns) exported.';
+    globalStatus.className = 'status ok';
+    showShareButton();
+  }
+
+  // ---------- Export Excel (Full Text) ----------
+  function exportFullExcel() {
+    if (!ocrText) return;
+    const lines = ocrText.split('\n').filter(l => l.trim());
+    const data = lines.map(line => ({ 'Extracted Text': line.trim() }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    ws['!cols'] = [{ wch: 80 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'FullText');
+    XLSX.writeFile(wb, 'invoice_fulltext.xlsx');
+    globalStatus.textContent = 'Excel (full text) exported.';
+    globalStatus.className = 'status ok';
+    showShareButton();
+  }
+
+  // ---------- Share ----------
+  function showShareButton() {
+    if (navigator.share && navigator.canShare) {
+      shareBtn.style.display = 'block';
+    }
+  }
+
+  async function shareExcel() {
+    try {
+      let blob, fileName;
+      if (extractedColumns.length) {
+        const maxLines = Math.max(...extractedColumns.map(c => c.text.split('\n').length), 0);
+        const rows = [];
+        for (let i = 0; i < maxLines; i++) {
+          const row = {};
+          extractedColumns.forEach(col => {
+            const lines = col.text.split('\n');
+            row[col.name] = lines[i] || '';
+          });
+          rows.push(row);
+        }
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Columns');
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        fileName = 'invoice_columns.xlsx';
+      } else if (ocrText) {
+        const lines = ocrText.split('\n').filter(l => l.trim());
+        const data = lines.map(line => ({ 'Extracted Text': line.trim() }));
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'FullText');
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        fileName = 'invoice_fulltext.xlsx';
+      } else {
+        return;
+      }
+
+      const file = new File([blob], fileName, {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ title: 'Invoice Scan', files: [file] });
+        globalStatus.textContent = 'Shared.';
+      } else {
+        globalStatus.textContent = 'File sharing not supported.';
+      }
+    } catch (err) {
+      globalStatus.textContent = 'Share error: ' + err.message;
+      globalStatus.className = 'status err';
+    }
+  }
+
+  // ---------- Event Bindings ----------
+  startCamBtn.addEventListener('click', startCamera);
+  captureBtn.addEventListener('click', capturePhoto);
+  ocrBtn.addEventListener('click', runOCR);
+  extractColBtn.addEventListener('click', extractColumn);
+  clearSelBtn.addEventListener('click', () => {
+    selRect = null;
+    if (selCtx && correctedCanvas) selCtx.drawImage(correctedCanvas, 0, 0);
+    selectionInfo.textContent = 'Selection cleared.';
+    extractColBtn.disabled = true;
+  });
+  exportExcelBtn.addEventListener('click', exportColumnsExcel);
+  exportExcelFullBtn.addEventListener('click', exportFullExcel);
+  shareBtn.addEventListener('click', shareExcel);
+
+  window.addEventListener('beforeunload', () => {
+    if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+  });
+
+})();
+</script>
+</body>
+</html>
