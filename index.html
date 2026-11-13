@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <meta name="theme-color" content="#0b4f6c" />
-<title>RKSCAN — AI Invoice Chat</title>
+<title>RKSCAN — AI Invoice Extraction</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📷</text></svg>" />
 
 <script src="https://js.puter.com/v2/"></script>
@@ -54,8 +54,6 @@
   .chat-bubble.assistant { align-self:flex-start; background:#fff; border:1px solid #e4e8ee; }
   .chat-bubble .chat-role { font-size:10px; font-weight:750; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-bottom:6px; }
   .chat-bubble .chat-body { white-space:pre-wrap; }
-  .chat-bubble pre { white-space:pre-wrap; overflow:auto; background:#17202c; color:#f1f5f9; padding:10px; border-radius:8px; }
-  .chat-bubble code { background:#eef1f5; padding:1px 4px; border-radius:4px; font-family:Consolas,monospace; }
   
   .chat-compose { width:min(930px,calc(100% - 24px)); margin:0 auto 12px; padding:10px 12px; background:#fff; border:1px solid #e0e5ec; border-radius:14px; box-shadow:0 4px 18px rgba(20,35,55,.06); display:flex; flex-direction:column; gap:8px; }
   #chatPrompt { width:100%; min-height:74px; max-height:190px; resize:vertical; border:0; outline:0; padding:7px; font:inherit; background:#fff; }
@@ -68,7 +66,6 @@
   #chatResultsTable { border-collapse:collapse; width:100%; font-size:11px; }
   #chatResultsTable th { position:sticky; top:32px; background:var(--brand-dark); color:#fff; padding:7px; text-align:left; white-space:nowrap; }
   #chatResultsTable td { border-bottom:1px solid var(--border); padding:5px 7px; min-width:65px; }
-  #chatResultsTable td[contenteditable=true]:focus { outline:2px solid var(--accent); background:#fffde7; }
   #chatResultsWrap[hidden] { display:none; }
   #chatState { font-size:11px; color:var(--muted); }
   
@@ -84,7 +81,7 @@
 <body>
 
 <header>
-  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">AI Invoice Chat (Free / No Key)</span></h1>
+  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">AI Invoice Extraction (Auto 6-Col Excel)</span></h1>
 </header>
 
 <main style="flex:1; overflow:hidden; position:relative; display:flex; flex-direction:column;">
@@ -92,7 +89,7 @@
     <div class="chat-top">
       <div>
         <strong>🤖 RK AI Assistant</strong>
-        <div class="chat-subtitle">Attach one or more invoice images and press Send. Rows extract automatically and the Excel file downloads instantly in the standard 8-column format.</div>
+        <div class="chat-subtitle">Attach invoice image(s) and press Send. Extracts model codes, applies DOZ ÷12 cost & ×12 qty, and auto-downloads the Excel.</div>
       </div>
       <div class="chat-top-tools">
         <button class="btn secondary small" id="chatSettingsBtn">⚙ Info</button>
@@ -101,19 +98,19 @@
     </div>
     <div class="chat-layout">
       <div id="chatMessages" aria-live="polite">
-        <div class="chat-bubble assistant"><div class="chat-role">RK AI Assistant</div><div class="chat-body">Hello! Attach one or more invoice images and press Send. I will auto-extract all rows and download the Excel file in the standard 8-column format (remarks, product name, group, cost, price, qty, barcode, description). No typing needed.</div></div>
+        <div class="chat-bubble assistant"><div class="chat-role">RK AI Assistant</div><div class="chat-body">Hello! Attach your invoice images and press Send. I will extract the model numbers for the product name, apply the DOZ rules to cost and qty, and download the Excel file in your exact format.</div></div>
       </div>
       <div id="chatResultsWrap" hidden>
         <div id="chatResultsTitle">Extracted invoice rows — no results yet</div>
         <div style="overflow:auto;"><table id="chatResultsTable"><thead></thead><tbody></tbody></table></div>
       </div>
       <div class="chat-compose">
-        <textarea id="chatPrompt" placeholder="Optional: add a note (e.g. 'DOZ qty ×12 and cost ÷12'). You can leave this blank."></textarea>
+        <textarea id="chatPrompt" placeholder="Optional: add a note. You can leave this blank."></textarea>
         <div class="chat-compose-row">
-          <label class="btn secondary" for="chatFiles">📎 Attach image(s) — multiple allowed</label>
+          <label class="btn secondary" for="chatFiles">📎 Attach image(s)</label>
           <input id="chatFiles" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple />
           <span id="chatFileNames">No files selected</span>
-          <span id="chatState">Ready (Puter.js)</span>
+          <span id="chatState">Ready</span>
         </div>
         <div class="chat-compose-row">
           <button class="btn ai" id="chatSendBtn">➤ Send</button>
@@ -148,11 +145,11 @@ function escapeHtml(s) {
 }
 
 /* =========================================================
-   AI CHAT STATE
+   STATE & HEADERS (MATCHES YOUR EXCEL)
    ========================================================= */
-const CHAT_EXCEL_HEADERS = ["remarks","product name","group","cost","price","qty","barcode","description"];
+const CHAT_EXCEL_HEADERS = ["remarks", "description", "group", "cost", "price", "qty"];
 const chatState = {
-  files: [], generalMessages: [], items: [], invoice: {},
+  files: [], items: [], invoice: {},
   busy: false
 };
 
@@ -160,7 +157,7 @@ function updateChatButtons() {
   $("chatExcelBtn").disabled = !chatState.items.length || chatState.busy;
   $("chatSendBtn").disabled = chatState.busy;
   $("chatSendBtn").textContent = chatState.busy ? "Processing…" : "➤ Send";
-  $("chatState").textContent = chatState.busy ? "AI is processing…" : "Ready (Puter.js)";
+  $("chatState").textContent = chatState.busy ? "AI is processing…" : "Ready";
   $("chatResultsWrap").hidden = !chatState.items.length;
 }
 
@@ -182,21 +179,9 @@ function renderChatItems() {
     tbody.appendChild(tr);
   });
   $("chatResultsTitle").textContent = chatState.items.length
-    ? `Extracted invoice rows — ${chatState.items.length} item(s). Cells are editable; review before export.`
-    : "Extracted invoice rows — no results yet";
+    ? `Extracted rows — ${chatState.items.length} item(s). Cells are editable.`
+    : "No results yet";
   updateChatButtons();
-}
-
-function normaliseChatItem(raw) {
-  const out = {};
-  CHAT_EXCEL_HEADERS.forEach(k => {
-    out[k] = raw?.[k] ?? raw?.[k.replace(/\s+/g, "_")] ?? "";
-  });
-  out.barcode = String(out.barcode ?? "").trim();
-  out.description = cleanText(out.description);
-  out["product name"] = cleanText(out["product name"] || out.description);
-  if (!out.description) out.description = out["product name"];
-  return out;
 }
 
 async function imageFileToDataUrl(file) {
@@ -229,30 +214,26 @@ function parseModelJson(content) {
   for (const candidate of candidates) {
     try { return JSON.parse(candidate); } catch (_) {}
   }
-  throw new Error("AI response was not valid JSON. Please retry or choose another vision model.");
+  throw new Error("AI response was not valid JSON.");
 }
 
-const INVOICE_CHAT_SYSTEM = `You are RK Invoice AI, an accuracy-first invoice extraction assistant. Analyze ALL uploaded invoice images (they may be multiple pages of the same invoice) and follow the user's instructions if any.
+/* =========================================================
+   SYSTEM PROMPT (RESTRICTED FOR EXACT EXCEL MATCH)
+   ========================================================= */
+const INVOICE_CHAT_SYSTEM = `You are RK Invoice AI. Extract line items from the uploaded invoice images to match a strict Excel format.
 
-Return ONLY valid JSON with this exact shape and NOTHING else (no markdown fences, no commentary):
-{"assistant_message":"short useful explanation","invoice":{"supplier":"","invoice_number":"","date":"","currency":"","invoice_total":""},"items":[{"remarks":"","product name":"","group":"","cost":"","price":"","qty":"","barcode":"","description":""}]}
+Return ONLY valid JSON with this exact shape (no markdown, no commentary):
+{"assistant_message":"short useful explanation","invoice":{"supplier":"","invoice_number":"","date":"","currency":"","invoice_total":""},"items":[{"remarks":"","description":"","group":"","cost":"","price":"","qty":""}]}
 
 STRICT RULES:
-- Extract EVERY visible line item from EVERY image. Do not silently omit rows.
-- Every item object MUST have these 8 keys: remarks, product name, group, cost, price, qty, barcode, description.
-- Missing values must be present as empty strings, never omitted.
-- Do not invent unreadable values. Leave uncertain cells blank.
-- Preserve printed product codes/barcodes exactly as strings, including leading zeros.
-- Do not rewrite description using any external database. Extraction is separate from product matching.
-- Do NOT return a "questions" field. Do NOT ask for clarification. If unclear, return best-effort rows with uncertain cells blank.
-- If product name is not separately printed, use the readable item name/description; keep the full original line in description.
-
-UNIT AND PRICE RULES:
-- DOZ/dozen items: qty = printed qty * 12, cost = printed unit price / 12. Keep price as printed.
-- PCS/pieces: preserve printed piece count and price.
-- Specific rule: '1+7 Pcs' means 8 pieces; for Farah Fashion invoice 8279 item 01, qty = 8*12 = 96 and cost = 230/12. Other items on that invoice follow DOZ rule.
-- Apply only conversions supported by the invoice or user's instructions. Never double-apply ×12 or ÷12 in follow-up messages.
-- Keep numeric values as decimal strings where useful (e.g. 21.6667). Do not round to 2 decimals unless asked.`;
+1. "description": Extract ONLY the model number / style number / item code / product code (e.g., "BS. 56660-1", "6956M011", "MFV702"). Do NOT include generic descriptions like "Girls", "Boys", "Ladies", etc.
+2. "qty": Check the invoice for the unit. If the unit is DOZ (Dozen), multiply the printed quantity by 12. If it is PCS, keep the printed quantity. Leave blank if unreadable.
+3. "cost": Check the invoice for the unit. If the unit is DOZ, divide the printed unit price by 12. If it is PCS, keep the printed price. Leave blank if unreadable.
+4. "price": Keep the original printed unit price as it appears.
+5. Do NOT invent unreadable values. Leave them blank.
+6. Do NOT return a "questions" field. Do not ask for clarification.
+7. Ignore empty rows in the invoice.
+8. Every item object MUST have exactly these 6 keys: remarks, description, group, cost, price, qty.`;
 
 /* =========================================================
    CHAT UI LOGIC
@@ -274,7 +255,6 @@ function addChatBubble(role, message) {
   const body = document.createElement("div");
   body.className = "chat-body";
   if (role === "assistant") {
-    // Simple markdown-like rendering for bold and newlines
     let html = escapeHtml(message);
     html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/\n/g, "<br>");
@@ -295,14 +275,11 @@ async function sendInvoiceChat() {
   chatState.busy=true; updateChatButtons();
   try {
     const silentInstruction =
-      "Extract EVERY visible line item from ALL attached invoice images. " +
-      "Return ONLY the JSON object. Do not ask questions. Do not explain. " +
-      "If a value is unreadable, leave it as an empty string. " +
-      "Convert DOZ quantities × 12 and DOZ unit price ÷ 12 as per the system rules. " +
-      "Keep barcode as a string with leading zeros.";
+      "Extract EVERY visible line item. Apply DOZ ÷12 to cost and ×12 to qty if the invoice uses DOZ. " +
+      "Use ONLY the model code for the description. Return ONLY the JSON object.";
 
     const userText = (prompt ? prompt + "\n\n" : "") + silentInstruction;
-    addChatBubble("user", (prompt ? prompt + "\n\n" : "") + `📎 ${files.length} image(s) attached: ${files.map(f => f.name).join(", ")}`);
+    addChatBubble("user", (prompt ? prompt + "\n\n" : "") + `📎 ${files.length} image(s) attached`);
 
     const dataUrls = [];
     for (const f of files) {
@@ -315,7 +292,6 @@ async function sendInvoiceChat() {
     if (dataUrls.length === 1) {
       response = await puter.ai.chat(fullPrompt, dataUrls[0], { model: "gpt-4o-mini" });
     } else {
-      // Multi-image: Puter.js accepts a message array with multiple image_url entries
       const messageContent = [{ type: "text", text: fullPrompt }];
       dataUrls.forEach(url => messageContent.push({ type: "image_url", image_url: { url } }));
       response = await puter.ai.chat(
@@ -326,57 +302,88 @@ async function sendInvoiceChat() {
 
     const raw = response.message?.content || response.toString();
     const parsed = parseModelJson(raw);
-    chatState.items = Array.isArray(parsed.items) ? parsed.items.map(normaliseChatItem) : chatState.items;
+    
+    // Normalise items to exact 6 columns
+    chatState.items = (Array.isArray(parsed.items) ? parsed.items : []).map(item => {
+      return {
+        remarks: item.remarks || "",
+        description: cleanText(item.description || item["product name"] || item.item || ""),
+        group: item.group || "",
+        cost: item.cost || "",
+        price: item.price || "",
+        qty: item.qty || ""
+      };
+    });
+
     chatState.invoice = parsed.invoice || chatState.invoice;
-    const assistantText = String(parsed.assistant_message || "Invoice analysis updated.");
+    const assistantText = String(parsed.assistant_message || "Extraction complete.");
     addChatBubble("assistant", assistantText + (chatState.items.length
-      ? `\n\nCurrent extracted rows: ${chatState.items.length}`
-      : "\n\nNo item rows were returned. Please upload a clearer image."));
+      ? `\n\nExtracted ${chatState.items.length} row(s).`
+      : "\n\nNo rows found."));
+    
     renderChatItems();
     $("chatPrompt").value=""; chatState.files=[]; $("chatFiles").value=""; $("chatFileNames").textContent="No files selected";
 
-    // 🚀 Auto-export Excel
+    // Auto-export
     if (chatState.items.length) {
       try { generateChatExcel(); } catch (e) { console.warn("Auto-export failed", e); }
       toast(`✅ ${chatState.items.length} rows extracted — Excel downloaded.`, 6000);
     }
   } catch(e) {
     addChatBubble("assistant", "I could not complete the extraction: " + e.message);
-    toast("Invoice extraction failed: " + e.message,6000);
+    toast("Extraction failed: " + e.message, 6000);
   } finally { chatState.busy=false; updateChatButtons(); }
 }
 
 function sendChatMessage() {
-  // Auto-detect invoice mode if files are attached
   if (chatState.files.length > 0 || chatState.items.length > 0) {
     return sendInvoiceChat();
   }
-  // Simple text fallback if no files
   toast("Please attach an invoice image to start.");
 }
 
 function generateChatExcel() {
-  if (!chatState.items.length) return toast("No AI invoice rows to export.");
-  const numericFields = new Set(["cost", "price", "qty"]);
-  const aoa=[CHAT_EXCEL_HEADERS, ...chatState.items.map(item=>CHAT_EXCEL_HEADERS.map(k=>{
-    const value = item[k] ?? "";
-    if (numericFields.has(k) && value !== "" && /^-?\d+(?:\.\d+)?$/.test(String(value).trim())) return Number(value);
-    return value;
-  }))];
-  const ws=XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"]=[{wch:14},{wch:32},{wch:16},{wch:14},{wch:14},{wch:12},{wch:20},{wch:55}];
-  ws["!autofilter"]={ref:`A1:H${aoa.length}`};
-  for (let r=1;r<aoa.length;r++) { const cell=ws[XLSX.utils.encode_cell({r,c:6})]; if(cell){cell.t="s";cell.v=String(cell.v??"");} }
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,ws,"Invoice Items");
-  const meta=[ ["Supplier",chatState.invoice.supplier||""],["Invoice Number",chatState.invoice.invoice_number||""],["Date",chatState.invoice.date||""],["Currency",chatState.invoice.currency||""],["Invoice Total",chatState.invoice.invoice_total||""] ];
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(meta),"Invoice Details");
-  const out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
-  const blob=new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-  const safe=(chatState.invoice.supplier||"Invoice").replace(/[^A-Za-z0-9_-]+/g,"_").slice(0,35);
-  const no=(chatState.invoice.invoice_number||new Date().toISOString().slice(0,10)).toString().replace(/[^A-Za-z0-9_-]+/g,"_");
-  downloadBlobAsFile(blob, `RKSCAN_AI_${safe}_${no}.xlsx`);
-  toast("Excel downloaded. Please verify invoice values before posting.",4500);
+  if (!chatState.items.length) return toast("No rows to export.");
+  
+  const aoa = [CHAT_EXCEL_HEADERS, ...chatState.items.map(item =>
+    CHAT_EXCEL_HEADERS.map(k => {
+      const value = item[k] ?? "";
+      // Ensure numeric fields are written as numbers if possible
+      if (["cost", "price", "qty"].includes(k) && value !== "" && /^-?\d+(?:\.\d+)?$/.test(String(value).trim())) {
+        return Number(value);
+      }
+      return value;
+    })
+  )];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [{wch:14}, {wch:32}, {wch:16}, {wch:14}, {wch:14}, {wch:12}];
+  ws["!autofilter"] = {ref: `A1:F${aoa.length}`};
+  
+  // Force description column to string
+  for (let r = 1; r < aoa.length; r++) {
+    const cell = ws[XLSX.utils.encode_cell({r, c: 1})];
+    if (cell) { cell.t = "s"; cell.v = String(cell.v ?? ""); }
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Invoice Items");
+  
+  const meta = [
+    ["Supplier", chatState.invoice.supplier || ""],
+    ["Invoice Number", chatState.invoice.invoice_number || ""],
+    ["Date", chatState.invoice.date || ""]
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(meta), "Invoice Details");
+
+  const out = XLSX.write(wb, {bookType:"xlsx", type:"array"});
+  const blob = new Blob([out], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  
+  const safe = (chatState.invoice.supplier || "Invoice").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 35);
+  const no = (chatState.invoice.invoice_number || new Date().toISOString().slice(0, 10)).toString().replace(/[^A-Za-z0-9_-]+/g, "_");
+  
+  downloadBlobAsFile(blob, `RKSCAN_${safe}_${no}.xlsx`);
+  toast("Excel downloaded. Please verify values before posting.", 4500);
 }
 
 /* =========================================================
@@ -385,7 +392,7 @@ function generateChatExcel() {
 $("chatFiles").addEventListener("change", e => {
   chatState.files = Array.from(e.target.files || []);
   $("chatFileNames").textContent = chatState.files.length
-    ? `${chatState.files.length} image(s): ${chatState.files.map(f => f.name).join(", ")}`
+    ? `${chatState.files.length} image(s) selected`
     : "No files selected";
 });
 
@@ -397,15 +404,17 @@ $("chatPrompt").addEventListener("keydown", e => {
 });
 
 $("chatSettingsBtn").addEventListener("click", () => {
-  alert("AI is powered by Puter.js.\n\nNo API key is required. When you use an AI feature for the first time, a Puter login window will appear. Sign in (or create a free account) to cover your own AI usage.");
+  alert("AI is powered by Puter.js.\n\nNo API key is required. When you use an AI feature for the first time, a Puter login window will appear.");
 });
 
 $("chatClearBtn").addEventListener("click", () => {
-  if (!confirm("Start a new conversation? Existing extracted invoice rows will be kept.")) return;
-  chatState.files=[]; chatState.generalMessages=[];
-  $("chatMessages").innerHTML="";
-  addChatBubble("assistant", "New conversation started. Attach invoice images and rows will extract automatically.");
-  $("chatPrompt").value=""; $("chatFiles").value=""; $("chatFileNames").textContent="No files selected";
+  if (!confirm("Start a new conversation?")) return;
+  chatState.files = [];
+  $("chatMessages").innerHTML = "";
+  addChatBubble("assistant", "New conversation started. Attach invoice images to extract.");
+  $("chatPrompt").value = "";
+  $("chatFiles").value = "";
+  $("chatFileNames").textContent = "No files selected";
   updateChatButtons();
 });
 
