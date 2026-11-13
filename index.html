@@ -58,7 +58,7 @@
   .chat-compose { width:min(930px,calc(100% - 24px)); margin:0 auto 12px; padding:10px 12px; background:#fff; border:1px solid #e0e5ec; border-radius:14px; box-shadow:0 4px 18px rgba(20,35,55,.06); display:flex; flex-direction:column; gap:8px; }
   #chatPrompt { width:100%; min-height:74px; max-height:190px; resize:vertical; border:0; outline:0; padding:7px; font:inherit; background:#fff; }
   .chat-compose-row { display:flex; flex-wrap:wrap; gap:7px; align-items:center; }
-  #chatFiles { display:none; }
+  .file-input-hidden { display:none; }
   #chatFileNames { color:var(--muted); font-size:11px; flex:1; min-width:100px; }
   
   #chatResultsWrap { max-height:35%; min-height:90px; overflow:auto; border-top:1px solid var(--border); background:#fff; }
@@ -81,7 +81,7 @@
 <body>
 
 <header>
-  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">AI Master Extractor (Multi-Invoice)</span></h1>
+  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">AI Master Extractor</span></h1>
 </header>
 
 <main style="flex:1; overflow:hidden; position:relative; display:flex; flex-direction:column;">
@@ -89,7 +89,7 @@
     <div class="chat-top">
       <div>
         <strong>🤖 RK AI Assistant</strong>
-        <div class="chat-subtitle">Attach multiple invoices. Generates 1 Excel file: Sheet 1 has all products (separated by empty rows), Sheets 2+ have the purchase bills.</div>
+        <div class="chat-subtitle">Attach images from gallery or capture photos. Generates 1 Excel with all products + per-invoice purchase bills.</div>
       </div>
       <div class="chat-top-tools">
         <button class="btn secondary small" id="chatSettingsBtn">⚙ Info</button>
@@ -98,11 +98,13 @@
     </div>
     <div class="chat-layout">
       <div id="chatMessages" aria-live="polite">
-        <div class="chat-bubble assistant"><div class="chat-role">RK AI Assistant</div><div class="chat-body">Hello! Attach one or more invoice images and press Send. I will process them all and automatically generate a single Excel workbook containing:
+        <div class="chat-bubble assistant"><div class="chat-role">RK AI Assistant</div><div class="chat-body">Hello! Attach your invoice images (from gallery or camera) and press Send. I will process them all and generate a single Excel workbook:
 <br><br>
 • <strong>Sheet 1 (Products):</strong> Combined 6-column extraction for all invoices, separated by empty rows.
 <br>
-• <strong>Sheets 2+ (Purchase Bills):</strong> Detailed 8-column purchase formats for each individual invoice.</div></div>
+• <strong>Sheets 2+ (Purchase Bills):</strong> Detailed 8-column purchase formats for each individual invoice.
+<br><br>
+You can then <strong>share</strong> the file directly to WhatsApp or download it.</div></div>
       </div>
       <div id="chatResultsWrap" hidden>
         <div id="chatResultsTitle">Extracted rows — no results yet</div>
@@ -111,14 +113,25 @@
       <div class="chat-compose">
         <textarea id="chatPrompt" placeholder="Optional: add a note. You can leave this blank."></textarea>
         <div class="chat-compose-row">
-          <label class="btn secondary" for="chatFiles">📎 Attach image(s)</label>
-          <input id="chatFiles" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple />
+          <!-- Gallery (multiple) -->
+          <label class="btn secondary" for="chatFiles">🖼️ Gallery</label>
+          <input id="chatFiles" class="file-input-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple />
+          
+          <!-- Camera (capture) -->
+          <label class="btn secondary" for="cameraInput">📷 Camera</label>
+          <input id="cameraInput" class="file-input-hidden" type="file" accept="image/*" capture="environment" />
+          
+          <!-- Remove last -->
+          <button class="btn danger small" id="removeLastBtn" title="Remove last attached image">🔄 Remove Last</button>
+          
           <span id="chatFileNames">No files selected</span>
-          <span id="chatState">Ready</span>
         </div>
         <div class="chat-compose-row">
+          <span id="chatState">Ready</span>
+          <span style="flex:1;"></span>
           <button class="btn ai" id="chatSendBtn">➤ Generate Master Excel</button>
-          <button class="btn ok" id="chatExcelBtn" disabled>⬇ Download Excel</button>
+          <button class="btn ok" id="chatShareBtn" disabled>📤 Share</button>
+          <button class="btn secondary" id="chatExcelBtn" disabled>⬇ Download</button>
         </div>
       </div>
     </div>
@@ -152,27 +165,36 @@ function escapeHtml(s) {
    STATE
    ========================================================= */
 const chatState = {
-  files: [], invoices: [], busy: false
+  files: [], invoices: [], busy: false,
+  lastBlob: null, lastFileName: null
 };
 
 const HEADERS_PRODUCTS = ["remarks", "description", "group", "cost", "price", "qty"];
 const HEADERS_PURCHASE = ["Description", "Barcode", "Quantity", "Unit Price", "Line Amount", "VAT %", "VAT Amount", "Item Code"];
 
 function updateChatButtons() {
-  $("chatExcelBtn").disabled = !chatState.invoices.length || chatState.busy;
+  const ready = !chatState.busy && chatState.invoices.length > 0;
+  $("chatExcelBtn").disabled = !ready;
+  $("chatShareBtn").disabled = !ready;
   $("chatSendBtn").disabled = chatState.busy;
   $("chatSendBtn").textContent = chatState.busy ? "Processing…" : "➤ Generate Master Excel";
   $("chatState").textContent = chatState.busy ? "AI is processing…" : "Ready";
   $("chatResultsWrap").hidden = !chatState.invoices.length;
+  $("removeLastBtn").disabled = chatState.files.length === 0 || chatState.busy;
+}
+
+function refreshFileLabel() {
+  $("chatFileNames").textContent = chatState.files.length
+    ? `${chatState.files.length} image(s) selected`
+    : "No files selected";
+  updateChatButtons();
 }
 
 function renderPreview() {
-  // Flatten all products for the preview table
   const allProducts = [];
   chatState.invoices.forEach((inv, idx) => {
     if (inv.products && inv.products.length) {
       allProducts.push(...inv.products);
-      // Add a separator row for preview
       if (idx < chatState.invoices.length - 1) {
         allProducts.push({ remarks: "", description: "--- SEPARATOR ---", group: "", cost: "", price: "", qty: "" });
       }
@@ -201,13 +223,13 @@ function renderPreview() {
     HEADERS_PRODUCTS.forEach((key) => {
       const td=document.createElement("td");
       td.textContent = item[key] == null ? "" : String(item[key]);
-      if (item.description !== "--- SEPARATOR ---") td.contentEditable="true";
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
   });
   
-  $("chatResultsTitle").textContent = `Master Preview: ${chatState.invoices.length} invoice(s), ${allProducts.filter(p=>p.description !== "--- SEPARATOR ---").length} product row(s).`;
+  const totalProducts = allProducts.filter(p=>p.description !== "--- SEPARATOR ---").length;
+  $("chatResultsTitle").textContent = `Master Preview: ${chatState.invoices.length} invoice(s), ${totalProducts} product row(s).`;
   updateChatButtons();
 }
 
@@ -245,7 +267,7 @@ function parseModelJson(content) {
 }
 
 /* =========================================================
-   SYSTEM PROMPTS (Combined)
+   SYSTEM PROMPT
    ========================================================= */
 const MASTER_SYSTEM = `You are RK Master Invoice AI. Extract data from the uploaded invoice images.
 The user will upload MULTIPLE images, each representing a separate invoice.
@@ -286,16 +308,38 @@ RULES FOR PURCHASE ITEMS (Sheets 2+):
 Ensure EVERY image represents ONE invoice in the "invoices" array. Do not combine different images into one invoice.`;
 
 /* =========================================================
-   CHAT UI LOGIC
+   SHARE / DOWNLOAD
    ========================================================= */
-function downloadBlobAsFile(blob, filename) {
+async function shareOrDownload(blob, filename) {
+  const file = new File([blob], filename, {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: "RKSCAN Master Invoice",
+        text: "Here is the extracted invoice data."
+      });
+      return "shared";
+    } catch (err) {
+      if (err.name === "AbortError") return "cancelled";
+      console.warn("Share failed, falling back to download", err);
+    }
+  }
+
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
+  return "downloaded";
 }
 
+/* =========================================================
+   CHAT UI LOGIC
+   ========================================================= */
 function addChatBubble(role, message) {
   const bubble = document.createElement("div");
   bubble.className = "chat-bubble " + (role === "user" ? "user" : "assistant");
@@ -350,7 +394,6 @@ async function sendChatMessage() {
       throw new Error("AI did not return an 'invoices' array.");
     }
 
-    // Normalize data
     chatState.invoices = parsed.invoices.map(inv => {
       const p = (inv.products || []).map(item => ({
         remarks: item.remarks || "",
@@ -381,15 +424,23 @@ async function sendChatMessage() {
     });
 
     const totalProducts = chatState.invoices.reduce((sum, inv) => sum + inv.products.length, 0);
-    addChatBubble("assistant", `✅ Extraction complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s).`);
+    addChatBubble("assistant", `✅ Extraction complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s). Click **📤 Share** to send to WhatsApp or **⬇ Download** to save.`);
     
     renderPreview();
-    $("chatPrompt").value=""; chatState.files=[]; $("chatFiles").value=""; $("chatFileNames").textContent="No files selected";
+    $("chatPrompt").value=""; chatState.files=[]; $("chatFiles").value=""; $("cameraInput").value=""; refreshFileLabel();
 
-    // Auto-export
     if (chatState.invoices.length) {
-      try { generateMasterExcel(); } catch (e) { console.warn("Auto-export failed", e); }
-      toast(`✅ Master Excel downloaded!`, 6000);
+      try {
+        const { blob, filename } = buildMasterExcelBlob();
+        chatState.lastBlob = blob;
+        chatState.lastFileName = filename;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        toast(`✅ Master Excel downloaded: ${filename}`, 6000);
+      } catch (e) { console.warn("Auto-export failed", e); }
     }
   } catch(e) {
     addChatBubble("assistant", "I could not complete the extraction: " + e.message);
@@ -397,8 +448,8 @@ async function sendChatMessage() {
   } finally { chatState.busy=false; updateChatButtons(); }
 }
 
-function generateMasterExcel() {
-  if (!chatState.invoices.length) return toast("No invoices to export.");
+function buildMasterExcelBlob() {
+  if (!chatState.invoices.length) throw new Error("No invoices to export.");
   
   const wb = XLSX.utils.book_new();
   
@@ -409,7 +460,6 @@ function generateMasterExcel() {
       inv.products.forEach(p => {
         productsAoa.push(HEADERS_PRODUCTS.map(k => p[k] ?? ""));
       });
-      // Add an empty row separator if it's not the last invoice
       if (idx < chatState.invoices.length - 1) {
         productsAoa.push(new Array(HEADERS_PRODUCTS.length).fill(""));
       }
@@ -420,14 +470,13 @@ function generateMasterExcel() {
   wsProducts["!cols"] = [{wch:14}, {wch:32}, {wch:16}, {wch:14}, {wch:14}, {wch:12}];
   wsProducts["!autofilter"] = {ref: `A1:F${productsAoa.length}`};
   
-  // Force description col as string
   for (let r = 1; r < productsAoa.length; r++) {
     const cell = wsProducts[XLSX.utils.encode_cell({r, c: 1})];
     if (cell) { cell.t = "s"; cell.v = String(cell.v ?? ""); }
   }
   XLSX.utils.book_append_sheet(wb, wsProducts, "Products (All)");
 
-  // ----- SHEET 2+: PURCHASE BILLS (One per invoice) -----
+  // ----- SHEET 2+: PURCHASE BILLS -----
   chatState.invoices.forEach((inv, idx) => {
     const meta = [
       ["RKSCAN - SUPPLIER PURCHASE BILL"],
@@ -451,49 +500,96 @@ function generateMasterExcel() {
       if (cell) { cell.t = "s"; cell.v = String(cell.v ?? ""); }
     }
 
-    // Sheet name: Bill_001, Bill_002, etc.
     const sheetName = `Bill_${String(idx + 1).padStart(3, '0')}`;
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   });
 
   const out = XLSX.write(wb, {bookType:"xlsx", type:"array"});
   const blob = new Blob([out], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-  
   const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  downloadBlobAsFile(blob, `RKSCAN_Master_${dateStr}.xlsx`);
-  toast("Master Excel downloaded (Products + Purchase Bills).", 5000);
+  const filename = `RKSCAN_Master_${dateStr}.xlsx`;
+  return { blob, filename };
+}
+
+async function handleShare() {
+  if (!chatState.lastBlob) { toast("Generate the Excel first."); return; }
+  try {
+    const result = await shareOrDownload(chatState.lastBlob, chatState.lastFileName);
+    if (result === "shared") toast("✅ Shared successfully!", 4000);
+    else if (result === "downloaded") toast("Downloaded (share not supported on this device).", 4000);
+  } catch (e) {
+    toast("Share failed: " + e.message, 5000);
+  }
+}
+
+async function handleDownload() {
+  if (!chatState.lastBlob) { toast("Generate the Excel first."); return; }
+  const url = URL.createObjectURL(chatState.lastBlob);
+  const a = document.createElement("a");
+  a.href = url; a.download = chatState.lastFileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  toast("✅ Downloaded: " + chatState.lastFileName, 4000);
 }
 
 /* =========================================================
    EVENT LISTENERS
    ========================================================= */
+// Gallery multi-select
 $("chatFiles").addEventListener("change", e => {
-  chatState.files = Array.from(e.target.files || []);
-  $("chatFileNames").textContent = chatState.files.length
-    ? `${chatState.files.length} image(s) selected`
-    : "No files selected";
+  const newFiles = Array.from(e.target.files || []);
+  if (newFiles.length) {
+    chatState.files.push(...newFiles);
+    toast(`🖼️ Added ${newFiles.length} image(s) from gallery. Total: ${chatState.files.length}`, 2500);
+  }
+  refreshFileLabel();
+  e.target.value = "";
+});
+
+// Camera capture (one per open, repeatable)
+$("cameraInput").addEventListener("change", e => {
+  const newFiles = Array.from(e.target.files || []);
+  if (newFiles.length) {
+    chatState.files.push(...newFiles);
+    toast(`📷 Photo captured and added. Total: ${chatState.files.length} image(s)`, 2500);
+  }
+  refreshFileLabel();
+  e.target.value = "";
+});
+
+// Remove last attached image
+$("removeLastBtn").addEventListener("click", () => {
+  if (chatState.busy) return;
+  if (!chatState.files.length) { toast("No images to remove."); return; }
+  chatState.files.pop();
+  refreshFileLabel();
+  toast(`Removed last image. Total: ${chatState.files.length}`, 2000);
 });
 
 $("chatSendBtn").addEventListener("click", sendChatMessage);
-$("chatExcelBtn").addEventListener("click", generateMasterExcel);
+$("chatExcelBtn").addEventListener("click", handleDownload);
+$("chatShareBtn").addEventListener("click", handleShare);
 
 $("chatPrompt").addEventListener("keydown", e => {
   if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
 });
 
 $("chatSettingsBtn").addEventListener("click", () => {
-  alert("AI is powered by Puter.js.\n\nNo API key is required. When you use an AI feature for the first time, a Puter login window will appear.");
+  alert("AI is powered by Puter.js.\n\nNo API key is required. When you use an AI feature for the first time, a Puter login window will appear.\n\n📷 Camera: Tap to capture a photo. Repeat as many times as you need.\n🖼️ Gallery: Select multiple images from your device.\n🔄 Remove Last: Removes the most recently added image.\n📤 Share: Opens your phone's share sheet (WhatsApp, Telegram, etc.).\n⬇ Download: Saves the Excel file.");
 });
 
 $("chatClearBtn").addEventListener("click", () => {
   if (!confirm("Start a new conversation?")) return;
   chatState.files = [];
   chatState.invoices = [];
+  chatState.lastBlob = null;
+  chatState.lastFileName = null;
   $("chatMessages").innerHTML = "";
-  addChatBubble("assistant", "New conversation started. Attach your invoice images to generate a Master Excel.");
+  addChatBubble("assistant", "New conversation started. Attach images from gallery or camera to generate a Master Excel.");
   $("chatPrompt").value = "";
   $("chatFiles").value = "";
-  $("chatFileNames").textContent = "No files selected";
+  $("cameraInput").value = "";
+  refreshFileLabel();
   updateChatButtons();
 });
 
