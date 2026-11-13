@@ -89,7 +89,7 @@
     <div class="chat-top">
       <div>
         <strong>🤖 RK AI Assistant</strong>
-        <div class="chat-subtitle">Attach images from gallery or capture photos. Generates 1 Excel with all products + per-invoice purchase bills.</div>
+        <div class="chat-subtitle">Attach images from gallery or camera. Generates 1 Excel with all products + per-invoice purchase bills.</div>
       </div>
       <div class="chat-top-tools">
         <button class="btn secondary small" id="chatSettingsBtn">⚙ Info</button>
@@ -104,7 +104,7 @@
 <br>
 • <strong>Sheets 2+ (Purchase Bills):</strong> Detailed 8-column purchase formats for each individual invoice.
 <br><br>
-You can then <strong>share</strong> the file directly to WhatsApp or download it.</div></div>
+Dates will be formatted as <strong>DD/MM/YYYY</strong> (e.g., 20/11/2026).</div></div>
       </div>
       <div id="chatResultsWrap" hidden>
         <div id="chatResultsTitle">Extracted rows — no results yet</div>
@@ -113,17 +113,11 @@ You can then <strong>share</strong> the file directly to WhatsApp or download it
       <div class="chat-compose">
         <textarea id="chatPrompt" placeholder="Optional: add a note. You can leave this blank."></textarea>
         <div class="chat-compose-row">
-          <!-- Gallery (multiple) -->
           <label class="btn secondary" for="chatFiles">🖼️ Gallery</label>
           <input id="chatFiles" class="file-input-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple />
-          
-          <!-- Camera (capture) -->
           <label class="btn secondary" for="cameraInput">📷 Camera</label>
           <input id="cameraInput" class="file-input-hidden" type="file" accept="image/*" capture="environment" />
-          
-          <!-- Remove last -->
           <button class="btn danger small" id="removeLastBtn" title="Remove last attached image">🔄 Remove Last</button>
-          
           <span id="chatFileNames">No files selected</span>
         </div>
         <div class="chat-compose-row">
@@ -159,6 +153,45 @@ function escapeHtml(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/* =========================================================
+   DATE FORMATTER: force DD/MM/YYYY
+   ========================================================= */
+function formatDateDDMMYYYY(raw) {
+  if (!raw) return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+
+  // Already DD/MM/YYYY or D/M/YYYY
+  let m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (m) {
+    let d = String(parseInt(m[1], 10)).padStart(2, "0");
+    let mo = String(parseInt(m[2], 10)).padStart(2, "0");
+    let y = m[3].length === 2 ? "20" + m[3] : m[3];
+    return `${d}/${mo}/${y}`;
+  }
+
+  // ISO: YYYY-MM-DD (possibly with time)
+  m = s.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
+  if (m) {
+    let y = m[1];
+    let mo = String(parseInt(m[2], 10)).padStart(2, "0");
+    let d = String(parseInt(m[3], 10)).padStart(2, "0");
+    return `${d}/${mo}/${y}`;
+  }
+
+  // Try native Date parsing (e.g., "Nov 12, 2026", "12 Nov 2026")
+  const dt = new Date(s);
+  if (!isNaN(dt.getTime())) {
+    const d = String(dt.getDate()).padStart(2, "0");
+    const mo = String(dt.getMonth() + 1).padStart(2, "0");
+    const y = dt.getFullYear();
+    return `${d}/${mo}/${y}`;
+  }
+
+  // Fallback
+  return s;
 }
 
 /* =========================================================
@@ -278,7 +311,7 @@ Return ONLY valid JSON with this exact shape:
     {
       "invoice_number": "string",
       "supplier": "string",
-      "date": "string",
+      "date": "string (format DD/MM/YYYY, e.g. 20/11/2026)",
       "invoice_total": "string",
       "products": [
         { "remarks": "", "description": "", "group": "", "cost": "", "price": "", "qty": "" }
@@ -304,6 +337,7 @@ RULES FOR PURCHASE ITEMS (Sheets 2+):
 4. "Unit Price": Extract as printed. DO NOT divide.
 5. Leave "Barcode", "VAT %", "VAT Amount", "Line Amount" blank if not visible.
 6. Extract header details (Supplier, Invoice Number, Date, Total) accurately.
+7. "date": Format as DD/MM/YYYY (e.g., 20/11/2026). If the printed date is "2026-11-20" or "20 Nov 2026", convert to "20/11/2026".
 
 Ensure EVERY image represents ONE invoice in the "invoices" array. Do not combine different images into one invoice.`;
 
@@ -416,7 +450,7 @@ async function sendChatMessage() {
       return {
         invoice_number: inv.invoice_number || "",
         supplier: inv.supplier || "",
-        date: inv.date || "",
+        date: formatDateDDMMYYYY(inv.date || ""),  // <-- NEW: force DD/MM/YYYY
         invoice_total: inv.invoice_total || "",
         products: p,
         purchase_items: pu
@@ -424,7 +458,7 @@ async function sendChatMessage() {
     });
 
     const totalProducts = chatState.invoices.reduce((sum, inv) => sum + inv.products.length, 0);
-    addChatBubble("assistant", `✅ Extraction complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s). Click **📤 Share** to send to WhatsApp or **⬇ Download** to save.`);
+    addChatBubble("assistant", `✅ Extraction complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s). Dates formatted as DD/MM/YYYY. Click **📤 Share** to send to WhatsApp or **⬇ Download** to save.`);
     
     renderPreview();
     $("chatPrompt").value=""; chatState.files=[]; $("chatFiles").value=""; $("cameraInput").value=""; refreshFileLabel();
@@ -483,7 +517,7 @@ function buildMasterExcelBlob() {
       ["Source Invoice", "Image"],
       ["Supplier Name", inv.supplier || ""],
       ["Invoice Number", inv.invoice_number || ""],
-      ["Invoice Date", inv.date || ""],
+      ["Invoice Date", inv.date || ""],  // Already formatted DD/MM/YYYY
       ["Invoice Amount", inv.invoice_total || ""],
       [],
       [],
@@ -535,7 +569,6 @@ async function handleDownload() {
 /* =========================================================
    EVENT LISTENERS
    ========================================================= */
-// Gallery multi-select
 $("chatFiles").addEventListener("change", e => {
   const newFiles = Array.from(e.target.files || []);
   if (newFiles.length) {
@@ -546,7 +579,6 @@ $("chatFiles").addEventListener("change", e => {
   e.target.value = "";
 });
 
-// Camera capture (one per open, repeatable)
 $("cameraInput").addEventListener("change", e => {
   const newFiles = Array.from(e.target.files || []);
   if (newFiles.length) {
@@ -557,7 +589,6 @@ $("cameraInput").addEventListener("change", e => {
   e.target.value = "";
 });
 
-// Remove last attached image
 $("removeLastBtn").addEventListener("click", () => {
   if (chatState.busy) return;
   if (!chatState.files.length) { toast("No images to remove."); return; }
@@ -575,7 +606,7 @@ $("chatPrompt").addEventListener("keydown", e => {
 });
 
 $("chatSettingsBtn").addEventListener("click", () => {
-  alert("AI is powered by Puter.js.\n\nNo API key is required. When you use an AI feature for the first time, a Puter login window will appear.\n\n📷 Camera: Tap to capture a photo. Repeat as many times as you need.\n🖼️ Gallery: Select multiple images from your device.\n🔄 Remove Last: Removes the most recently added image.\n📤 Share: Opens your phone's share sheet (WhatsApp, Telegram, etc.).\n⬇ Download: Saves the Excel file.");
+  alert("AI is powered by Puter.js.\n\nNo API key is required. When you use an AI feature for the first time, a Puter login window will appear.\n\n📷 Camera: Tap to capture a photo. Repeat as many times as you need.\n🖼️ Gallery: Select multiple images from your device.\n🔄 Remove Last: Removes the most recently added image.\n📤 Share: Opens your phone's share sheet (WhatsApp, Telegram, etc.).\n⬇ Download: Saves the Excel file.\n\nDates are formatted as DD/MM/YYYY (e.g., 20/11/2026).");
 });
 
 $("chatClearBtn").addEventListener("click", () => {
