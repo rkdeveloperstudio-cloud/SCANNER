@@ -104,7 +104,7 @@
 <br>
 • <strong>Sheets 2+ (Purchase Bills):</strong> Detailed 8-column purchase formats for each individual invoice.
 <br><br>
-Dates will be formatted as <strong>DD/MM/YYYY</strong> (e.g., 20/11/2026).</div></div>
+Dates → <strong>DD/MM/YYYY</strong>. Amounts → <strong>plain numbers</strong> (no commas).</div></div>
       </div>
       <div id="chatResultsWrap" hidden>
         <div id="chatResultsTitle">Extracted rows — no results yet</div>
@@ -163,7 +163,6 @@ function formatDateDDMMYYYY(raw) {
   const s = String(raw).trim();
   if (!s) return "";
 
-  // Already DD/MM/YYYY or D/M/YYYY
   let m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
   if (m) {
     let d = String(parseInt(m[1], 10)).padStart(2, "0");
@@ -172,7 +171,6 @@ function formatDateDDMMYYYY(raw) {
     return `${d}/${mo}/${y}`;
   }
 
-  // ISO: YYYY-MM-DD (possibly with time)
   m = s.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
   if (m) {
     let y = m[1];
@@ -181,7 +179,6 @@ function formatDateDDMMYYYY(raw) {
     return `${d}/${mo}/${y}`;
   }
 
-  // Try native Date parsing (e.g., "Nov 12, 2026", "12 Nov 2026")
   const dt = new Date(s);
   if (!isNaN(dt.getTime())) {
     const d = String(dt.getDate()).padStart(2, "0");
@@ -190,7 +187,48 @@ function formatDateDDMMYYYY(raw) {
     return `${d}/${mo}/${y}`;
   }
 
-  // Fallback
+  return s;
+}
+
+/* =========================================================
+   NUMBER CLEANER: strip commas, spaces, currency, keep digits
+   ========================================================= */
+function parseCleanNumber(raw) {
+  if (raw === null || raw === undefined || raw === "") return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+  // Remove currency symbols and thousands separators
+  const cleaned = s.replace(/[^\d\.\-]/g, "");
+  if (!cleaned || cleaned === "-" || cleaned === ".") return "";
+  const n = Number(cleaned);
+  if (!isFinite(n)) return "";
+  return n;
+}
+
+/* =========================================================
+   PRODUCT DESCRIPTION CLEANER: keeps ONLY the model code
+   e.g. "GIRLS FROK-8220179B" -> "8220179B"
+        "SLIPPER-BS-56660-1" -> "BS-56660-1"
+        "BS. 56660-1"        -> "BS-56660-1"
+   ========================================================= */
+function extractModelCode(desc) {
+  const s = cleanText(desc);
+  if (!s) return "";
+  // Try to find the code after a hyphen or space at the end
+  const parts = s.split(/[\s\-]+/);
+  // The model code is usually the last 1-3 tokens that contain letters+digits
+  let codeParts = [];
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i].replace(/[^\w]/g, "");
+    if (/^[A-Za-z0-9]+$/.test(p) && /\d/.test(p) && p.length >= 3) {
+      codeParts.unshift(p);
+      if (codeParts.length >= 3) break;
+    } else if (codeParts.length) {
+      break;
+    }
+  }
+  if (codeParts.length) return codeParts.join("-");
+  // Fallback: return the full text
   return s;
 }
 
@@ -300,7 +338,7 @@ function parseModelJson(content) {
 }
 
 /* =========================================================
-   SYSTEM PROMPT
+   SYSTEM PROMPT (STRICTER ON MODEL CODES)
    ========================================================= */
 const MASTER_SYSTEM = `You are RK Master Invoice AI. Extract data from the uploaded invoice images.
 The user will upload MULTIPLE images, each representing a separate invoice.
@@ -312,7 +350,7 @@ Return ONLY valid JSON with this exact shape:
       "invoice_number": "string",
       "supplier": "string",
       "date": "string (format DD/MM/YYYY, e.g. 20/11/2026)",
-      "invoice_total": "string",
+      "invoice_total": "number (plain digits, no commas, no currency)",
       "products": [
         { "remarks": "", "description": "", "group": "", "cost": "", "price": "", "qty": "" }
       ],
@@ -323,21 +361,31 @@ Return ONLY valid JSON with this exact shape:
   ]
 }
 
+CRITICAL RULE — DO NOT HALLUCINATE MODEL CODES:
+- Extract the model codes EXACTLY as printed. If the invoice shows "8852A" and "8852B", you MUST return "8852A" and "8852B".
+- Do NOT invent "8852C", "8852D", or any other variant that is not explicitly printed on the invoice.
+- Do NOT assume sequential model numbers. Each code must be visually verified.
+- If a model code is partially illegible, leave it blank — never guess.
+- Count the rows carefully. If there are 4 model codes on the invoice, return exactly 4 products. Do not add or remove rows.
+
 RULES FOR PRODUCTS (Sheet 1):
 1. "description": Extract ONLY the model number / style number / item code (e.g., "BS. 56660-1", "6956M011"). Do NOT include generic descriptions like "Girls", "Boys", "Ladies", etc.
 2. "qty": If the invoice unit is DOZ (Dozen), multiply the printed quantity by 12. If PCS, keep as printed.
 3. "cost": If the invoice unit is DOZ, divide the printed unit price by 12. If PCS, keep as printed.
-4. "price": Keep the original printed unit price.
+4. "price": Keep the original printed unit price as plain digits (e.g., 540, not "5,220").
 5. Do NOT invent values. Leave blank if unreadable.
 
 RULES FOR PURCHASE ITEMS (Sheets 2+):
 1. "Description": Combine the product category (e.g., SLIPPER, SHOES, GIRLS FROK) with the model number using a hyphen (e.g., "SLIPPER-BS-56660-1").
 2. "Item Code": Extract just the model/style code (e.g., "BS-56660-1").
-3. "Quantity": Extract as printed. DO NOT multiply by 12.
-4. "Unit Price": Extract as printed. DO NOT divide.
-5. Leave "Barcode", "VAT %", "VAT Amount", "Line Amount" blank if not visible.
+3. "Quantity": Extract as plain digits. DO NOT multiply by 12.
+4. "Unit Price": Extract as plain digits. DO NOT divide and DO NOT include commas.
+5. "Line Amount", "VAT %", "VAT Amount": Extract as plain digits (e.g., 5220 not "5,220"). Leave blank if not visible.
 6. Extract header details (Supplier, Invoice Number, Date, Total) accurately.
 7. "date": Format as DD/MM/YYYY (e.g., 20/11/2026). If the printed date is "2026-11-20" or "20 Nov 2026", convert to "20/11/2026".
+8. "invoice_total": Write as a plain number (e.g., 5220 not "5,220" and not "AED 5,220").
+
+FINAL RULE: For every numeric field (qty, cost, price, unit price, line amount, VAT, invoice_total), return ONLY digits and decimal points. Strip all commas, currency symbols, and spaces.
 
 Ensure EVERY image represents ONE invoice in the "invoices" array. Do not combine different images into one invoice.`;
 
@@ -431,34 +479,34 @@ async function sendChatMessage() {
     chatState.invoices = parsed.invoices.map(inv => {
       const p = (inv.products || []).map(item => ({
         remarks: item.remarks || "",
-        description: cleanText(item.description || ""),
+        description: extractModelCode(item.description || ""),  // <-- strips generic words
         group: item.group || "",
-        cost: item.cost || "",
-        price: item.price || "",
-        qty: item.qty || ""
+        cost: parseCleanNumber(item.cost),   // <-- numeric, no commas
+        price: parseCleanNumber(item.price),
+        qty: parseCleanNumber(item.qty)
       }));
       const pu = (inv.purchase_items || []).map(item => ({
         Description: cleanText(item.Description || ""),
         Barcode: item.Barcode || "",
-        Quantity: item.Quantity || "",
-        "Unit Price": item["Unit Price"] || "",
-        "Line Amount": item["Line Amount"] || "",
+        Quantity: parseCleanNumber(item.Quantity),
+        "Unit Price": parseCleanNumber(item["Unit Price"]),
+        "Line Amount": parseCleanNumber(item["Line Amount"]),
         "VAT %": item["VAT %"] || "",
-        "VAT Amount": item["VAT Amount"] || "",
-        "Item Code": item["Item Code"] || ""
+        "VAT Amount": parseCleanNumber(item["VAT Amount"]),
+        "Item Code": cleanText(item["Item Code"] || "")
       }));
       return {
         invoice_number: inv.invoice_number || "",
         supplier: inv.supplier || "",
-        date: formatDateDDMMYYYY(inv.date || ""),  // <-- NEW: force DD/MM/YYYY
-        invoice_total: inv.invoice_total || "",
+        date: formatDateDDMMYYYY(inv.date || ""),
+        invoice_total: parseCleanNumber(inv.invoice_total),
         products: p,
         purchase_items: pu
       };
     });
 
     const totalProducts = chatState.invoices.reduce((sum, inv) => sum + inv.products.length, 0);
-    addChatBubble("assistant", `✅ Extraction complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s). Dates formatted as DD/MM/YYYY. Click **📤 Share** to send to WhatsApp or **⬇ Download** to save.`);
+    addChatBubble("assistant", `✅ Extraction complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s). Dates formatted as DD/MM/YYYY. Amounts as plain numbers.`);
     
     renderPreview();
     $("chatPrompt").value=""; chatState.files=[]; $("chatFiles").value=""; $("cameraInput").value=""; refreshFileLabel();
@@ -517,7 +565,7 @@ function buildMasterExcelBlob() {
       ["Source Invoice", "Image"],
       ["Supplier Name", inv.supplier || ""],
       ["Invoice Number", inv.invoice_number || ""],
-      ["Invoice Date", inv.date || ""],  // Already formatted DD/MM/YYYY
+      ["Invoice Date", inv.date || ""],
       ["Invoice Amount", inv.invoice_total || ""],
       [],
       [],
@@ -606,7 +654,7 @@ $("chatPrompt").addEventListener("keydown", e => {
 });
 
 $("chatSettingsBtn").addEventListener("click", () => {
-  alert("AI is powered by Puter.js.\n\nNo API key is required. When you use an AI feature for the first time, a Puter login window will appear.\n\n📷 Camera: Tap to capture a photo. Repeat as many times as you need.\n🖼️ Gallery: Select multiple images from your device.\n🔄 Remove Last: Removes the most recently added image.\n📤 Share: Opens your phone's share sheet (WhatsApp, Telegram, etc.).\n⬇ Download: Saves the Excel file.\n\nDates are formatted as DD/MM/YYYY (e.g., 20/11/2026).");
+  alert("AI is powered by Puter.js.\n\nNo API key required.\n\n📷 Camera: snap multiple photos.\n🖼️ Gallery: pick multiple images.\n🔄 Remove Last: undo the last attachment.\n📤 Share: WhatsApp / Telegram / Email.\n⬇ Download: save to device.\n\nDates → DD/MM/YYYY\nAmounts → plain numbers (no commas)\nModel codes → extracted exactly as printed (no hallucination)");
 });
 
 $("chatClearBtn").addEventListener("click", () => {
@@ -616,7 +664,7 @@ $("chatClearBtn").addEventListener("click", () => {
   chatState.lastBlob = null;
   chatState.lastFileName = null;
   $("chatMessages").innerHTML = "";
-  addChatBubble("assistant", "New conversation started. Attach images from gallery or camera to generate a Master Excel.");
+  addChatBubble("assistant", "New conversation started. Attach images to generate a Master Excel.");
   $("chatPrompt").value = "";
   $("chatFiles").value = "";
   $("cameraInput").value = "";
