@@ -7,6 +7,7 @@
 <title>RKSCAN — AI Master Invoice Extractor</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📷</text></svg>" />
 
+<!-- Scripts: Puter for fallback, XLSX for Excel -->
 <script src="https://js.puter.com/v2/"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
@@ -41,6 +42,10 @@
   .btn:disabled { opacity: .5; cursor: not-allowed; }
   .btn.small { padding: 5px 9px; font-size: 12px; }
   
+  /* Model Selector */
+  .header-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .select-control { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: #fff; font-weight: 600; color: var(--brand-dark); font-size: 12px; outline: none; }
+
   /* Chat UI */
   #tab-chat { flex: 1; display: flex; flex-direction: column; background:#f5f7fa; overflow: hidden; }
   .chat-top { padding:12px 16px; background:#fff; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
@@ -81,7 +86,20 @@
 <body>
 
 <header>
-  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">AI Master Extractor</span></h1>
+  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">Dual AI Extractor</span></h1>
+  <div class="header-controls">
+    <select id="providerSelect" class="select-control">
+      <option value="openrouter">OpenRouter (API Key)</option>
+      <option value="puter">Puter.js (Free)</option>
+      <option value="auto">Auto (OpenRouter → Puter)</option>
+    </select>
+    <select id="modelSelect" class="select-control">
+      <option value="openai/gpt-4o">GPT-4o (Best)</option>
+      <option value="anthropic/claude-3.5-sonnet">Claude 3.5</option>
+      <option value="google/gemini-pro-1.5">Gemini Pro</option>
+      <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+    </select>
+  </div>
 </header>
 
 <main style="flex:1; overflow:hidden; position:relative; display:flex; flex-direction:column;">
@@ -135,6 +153,12 @@ Dates → <strong>DD/MM/YYYY</strong>. Amounts → <strong>plain numbers</strong
 <div id="toast"></div>
 
 <script>
+/* =========================================================
+   CONFIGURATION
+   ========================================================= */
+const OPENROUTER_API_KEY = "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";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+
 /* =========================================================
    HELPERS
    ========================================================= */
@@ -310,7 +334,7 @@ function parseModelJson(content) {
 }
 
 /* =========================================================
-   ULTIMATE SYSTEM PROMPT (STRICT MIXED UNITS & ROWS)
+   ULTIMATE SYSTEM PROMPT
    ========================================================= */
 const MASTER_SYSTEM = `You are RK Master Invoice AI, an expert data extractor. The user will upload invoice images. 
 
@@ -364,6 +388,76 @@ FOR "purchase_items" ARRAY:
 - "VAT %": e.g., 5%.
 - "VAT Amount": e.g., 14.20.
 `;
+
+/* =========================================================
+   AI CALLS (DUAL PROVIDER)
+   ========================================================= */
+async function callOpenRouter(dataUrls, systemPrompt) {
+  const model = $("modelSelect").value;
+  const content = [{ type: "text", text: systemPrompt }];
+  dataUrls.forEach(url => content.push({ type: "image_url", image_url: { url: url } }));
+
+  const payload = {
+    model: model,
+    messages: [{ role: "user", content: content }],
+    response_format: { type: "json_object" }
+  };
+
+  const response = await fetch(OPENROUTER_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://rkscan.app",
+      "X-Title": "RKSCAN"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`OpenRouter Error: ${response.status} - ${err}`);
+  }
+
+  const data = await response.json();
+  if (!data.choices || !data.choices.length) throw new Error("No response from OpenRouter.");
+  return data.choices[0].message.content;
+}
+
+async function callPuter(dataUrls, systemPrompt) {
+  let response;
+  if (dataUrls.length === 1) {
+    response = await puter.ai.chat(systemPrompt, dataUrls[0], { model: "gpt-4o-mini" });
+  } else {
+    const messageContent = [{ type: "text", text: systemPrompt }];
+    dataUrls.forEach(url => messageContent.push({ type: "image_url", image_url: { url } }));
+    response = await puter.ai.chat(
+      [{ role: "user", content: messageContent }],
+      { model: "gpt-4o-mini" }
+    );
+  }
+  return response.message?.content || response.toString();
+}
+
+async function callAI(dataUrls, systemPrompt) {
+  const provider = $("providerSelect").value;
+  
+  if (provider === "openrouter") {
+    return await callOpenRouter(dataUrls, systemPrompt);
+  } else if (provider === "puter") {
+    return await callPuter(dataUrls, systemPrompt);
+  } else {
+    // Auto mode: Try OpenRouter, fall back to Puter
+    try {
+      toast("Attempting OpenRouter...", 2000);
+      return await callOpenRouter(dataUrls, systemPrompt);
+    } catch (err) {
+      console.warn("OpenRouter failed, falling back to Puter.js", err);
+      toast("OpenRouter failed. Switching to Puter.js...", 3000);
+      return await callPuter(dataUrls, systemPrompt);
+    }
+  }
+}
 
 /* =========================================================
    SHARE / DOWNLOAD
@@ -426,26 +520,16 @@ async function sendChatMessage() {
   
   chatState.busy = true; updateChatButtons();
   try {
-    addChatBubble("user", `📎 ${files.length} invoice image(s) attached. Processing...`);
+    const provider = $("providerSelect").value;
+    const model = $("modelSelect").options[$("modelSelect").selectedIndex].text;
+    addChatBubble("user", `📎 ${files.length} invoice image(s) attached. Processing with ${provider === 'puter' ? 'Puter.js (gpt-4o-mini)' : model}...`);
 
     const dataUrls = [];
     for (const f of files) {
       dataUrls.push(await imageFileToDataUrl(f));
     }
 
-    let response;
-    if (dataUrls.length === 1) {
-      response = await puter.ai.chat(MASTER_SYSTEM, dataUrls[0], { model: "gpt-4o-mini" });
-    } else {
-      const messageContent = [{ type: "text", text: MASTER_SYSTEM }];
-      dataUrls.forEach(url => messageContent.push({ type: "image_url", image_url: { url } }));
-      response = await puter.ai.chat(
-        [{ role: "user", content: messageContent }],
-        { model: "gpt-4o-mini" }
-      );
-    }
-
-    const raw = response.message?.content || response.toString();
+    const raw = await callAI(dataUrls, MASTER_SYSTEM);
     const parsed = parseModelJson(raw);
     
     if (!parsed.invoices || !Array.isArray(parsed.invoices)) {
@@ -593,6 +677,22 @@ async function handleDownload() {
 /* =========================================================
    EVENT LISTENERS
    ========================================================= */
+// Update model dropdown based on provider
+$("providerSelect").addEventListener("change", () => {
+  const isPuter = $("providerSelect").value === "puter";
+  $("modelSelect").disabled = isPuter;
+  if (isPuter) {
+    $("modelSelect").innerHTML = '<option>gpt-4o-mini (Puter Default)</option>';
+  } else {
+    $("modelSelect").innerHTML = `
+      <option value="openai/gpt-4o">GPT-4o (Best)</option>
+      <option value="anthropic/claude-3.5-sonnet">Claude 3.5</option>
+      <option value="google/gemini-pro-1.5">Gemini Pro</option>
+      <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+    `;
+  }
+});
+
 $("chatFiles").addEventListener("change", e => {
   const newFiles = Array.from(e.target.files || []);
   if (newFiles.length) {
@@ -630,7 +730,7 @@ $("chatPrompt").addEventListener("keydown", e => {
 });
 
 $("chatSettingsBtn").addEventListener("click", () => {
-  alert("AI is powered by Puter.js.\n\nNo API key required.\n\n📷 Camera: snap multiple photos.\n🖼️ Gallery: pick multiple images.\n🔄 Remove Last: undo the last attachment.\n📤 Share: WhatsApp / Telegram / Email.\n⬇ Download: save to device.\n\nDates → DD/MM/YYYY\nAmounts → plain numbers (no commas)\nModel codes → extracted exactly as printed.");
+  alert("Dual AI Engine:\n\n1. OpenRouter: Uses your API key and the selected model (GPT-4o is best for accuracy).\n2. Puter.js: Free, no key, uses gpt-4o-mini.\n3. Auto: Tries OpenRouter first, falls back to Puter if the API fails.\n\n📷 Camera / 🖼️ Gallery: Add images.\n🔄 Remove Last: Undo the last attachment.\n📤 Share: WhatsApp / Telegram / Email.\n⬇ Download: Save to device.");
 });
 
 $("chatClearBtn").addEventListener("click", () => {
