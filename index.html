@@ -88,8 +88,6 @@
     <select id="modelSelect" class="select-control">
       <option value="z-ai/glm-4.6v" selected>GLM 4.6V (Free Vision)</option>
       <option value="perceptron/perceptron-mk1">Perceptron Mk1 (Free Vision)</option>
-      <option value="deepseek-chat">DeepSeek V3 (Text)</option>
-      <option value="deepseek-reasoner">DeepSeek R1 (Text)</option>
     </select>
   </div>
 </header>
@@ -114,7 +112,7 @@
 <br>
 • <strong>Sheets 2+ (Purchase Bills):</strong> Detailed formats for each invoice.
 <br><br>
-Dates → <strong>DD/MM/YYYY</strong>. Amounts → <strong>plain numbers</strong>. Qty converted to PCS.</div></div>
+Dates → <strong>DD/MM/YYYY</strong>. Amounts → <strong>plain numbers</strong>. Qty ×12, Cost ÷12.</div></div>
       </div>
       <div id="chatResultsWrap" hidden>
         <div id="chatResultsTitle">Extracted rows — no results yet</div>
@@ -320,7 +318,7 @@ function parseModelJson(content) {
 }
 
 /* =========================================================
-   ULTIMATE SYSTEM PROMPT (STRICT COST MATH)
+   ULTIMATE SYSTEM PROMPT (FIXED MATH: PRICE/12 & QTY*12)
    ========================================================= */
 const MASTER_SYSTEM = `You are RK Master Invoice AI, an expert data extractor. The user will upload invoice images.
 
@@ -343,35 +341,26 @@ Return ONLY valid JSON with this exact shape:
 }
 
 CRITICAL RULES:
-1. DO NOT SKIP ROWS. Look at the last row number on the invoice (e.g., 26). You MUST output exactly that many items.
+1. DO NOT SKIP ROWS. Look at the last row number on the invoice. You MUST output exactly that many items.
 2. MODEL EXTRACTION: Extract ONLY the model code (e.g., "A.2222A-506", "LC3176"). DO NOT include words like "Finger Ring", "Hair Clip", "Rubber".
 3. NUMBERS ONLY: Strip all commas and symbols from numbers.
 
-MIXED UNIT LOGIC (PCS, PAC, BOX, DZ):
-- If Unit is "DZ" (Dozen): Total PCS = Qty × 12.
-- If Unit is "BOX": Total PCS = Qty × 24. (Unless a different inner qty is printed).
-- If Unit is "PAC" or "PCS": Total PCS = Qty × 1.
-
-COST FORMULA (CRITICAL – READ CAREFULLY):
-1. Find the column labeled "Taxable Amount", "Amount", "Subtotal", or "Line Total". This is the TOTAL for that row (e.g., 284.00).
-2. Calculate Total PCS using the unit rules above.
-3. Cost per PCS = Taxable Amount ÷ Total PCS.
-4. If you CANNOT find a Taxable Amount column, OR if the amount is blank/zero, leave Cost BLANK. Do NOT guess.
-
-Example: Row 1: Qty=2, Unit=DZ (so Total PCS=24), Taxable Amount=284.00. Cost = 284 / 24 = 11.83. Price = 142.00 (printed unit price).
-Example: Row 2: Qty=1, Unit=BOX (Total PCS=24), Taxable Amount=141.00. Cost = 141 / 24 = 5.87. Price = 141.00.
+MATH RULES (STRICT - FOLLOW EXACTLY):
+- QTY: Find the printed Qty on the invoice and MULTIPLY by 12. (Example: Qty=2 becomes 24).
+- COST: Find the printed Unit Price (Rate) on the invoice and DIVIDE by 12. (Example: Price=420 becomes 35.00).
+- PRICE: Keep the printed Unit Price exactly as shown (e.g., 420).
 
 DATA MAPPING:
 
 FOR "products" ARRAY:
 - "description": Model code only.
-- "qty": Total PCS (calculated above).
-- "cost": Calculated Cost per PCS (calculated above).
-- "price": The printed Unit Price (e.g., 142.00).
+- "qty": Printed Qty * 12.
+- "cost": Printed Unit Price / 12.
+- "price": Printed Unit Price (e.g., 420).
 
 FOR "purchase_items" ARRAY:
 - "Description": Model code only.
-- "Quantity": Total PCS (calculated above).
+- "Quantity": Printed Qty * 12.
 - "Unit Price": The Taxable Amount (Subtotal) for that row.
 - "Line Amount": Same as Unit Price.
 - "VAT %": e.g., 5%.
@@ -379,15 +368,10 @@ FOR "purchase_items" ARRAY:
 `;
 
 /* =========================================================
-   PUTER AI CALL (SINGLE PROVIDER)
+   PUTER AI CALL
    ========================================================= */
 async function callPuter(dataUrls, systemPrompt) {
   const model = $("modelSelect").value;
-  
-  // Text-only DeepSeek models cannot process images
-  if (model.startsWith("deepseek")) {
-    throw new Error("DeepSeek models are text-only and cannot read invoice images. Please select a Vision model (GLM 4.6V or Perceptron Mk1) from the dropdown.");
-  }
 
   let response;
   if (dataUrls.length === 1) {
@@ -657,7 +641,7 @@ $("chatPrompt").addEventListener("keydown", e => {
 });
 
 $("chatSettingsBtn").addEventListener("click", () => {
-  alert("Free AI via Puter.js.\n\n• GLM 4.6V – Vision model for reading invoices.\n• Perceptron Mk1 – Alternative vision model.\n• DeepSeek V3/R1 – TEXT ONLY, cannot read images.\n\nFor invoice extraction, always use a Vision model.\n\nCost formula: Taxable Amount ÷ Total PCS. If Taxable Amount is missing, Cost is left blank.");
+  alert("Free AI via Puter.js.\n\n• GLM 4.6V – Vision model for reading invoices.\n• Perceptron Mk1 – Alternative vision model.\n\nMath Rules:\nQty = Printed Qty * 12\nCost = Printed Unit Price / 12\nPrice = Printed Unit Price\n\nIf a value is unreadable, it is left blank.");
 });
 
 $("chatClearBtn").addEventListener("click", () => {
