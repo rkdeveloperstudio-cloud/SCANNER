@@ -7,7 +7,7 @@
 <title>RKSCAN — AI Master Invoice Extractor</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📷</text></svg>" />
 
-<script src="https://js.puter.com/v2/"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
 <style>
@@ -41,9 +41,6 @@
   .btn:disabled { opacity: .5; cursor: not-allowed; }
   .btn.small { padding: 5px 9px; font-size: 12px; }
   
-  .header-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .select-control { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: #fff; font-weight: 600; color: var(--brand-dark); font-size: 12px; outline: none; }
-
   #tab-chat { flex: 1; display: flex; flex-direction: column; background:#f5f7fa; overflow: hidden; }
   .chat-top { padding:12px 16px; background:#fff; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   .chat-top strong { color:var(--brand-dark); font-size:15px; }
@@ -72,7 +69,7 @@
   #chatState { font-size:11px; color:var(--muted); }
   
   #toast { position: fixed; bottom: 70px; left: 50%; transform: translateX(-50%);
-    background: #222; color: #fff; padding: 10px 16px; border-radius: 6px;
+    background: #222; color: #fff; padding:10px 16px; border-radius: 6px;
     font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s;
     z-index: 2000; max-width: 90%; text-align: center; }
   #toast.show { opacity: 1; }
@@ -83,13 +80,7 @@
 <body>
 
 <header>
-  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">Free AI Extractor</span></h1>
-  <div class="header-controls">
-    <select id="modelSelect" class="select-control">
-      <option value="z-ai/glm-4.6v" selected>GLM 4.6V (Free Vision)</option>
-      <option value="perceptron/perceptron-mk1">Perceptron Mk1 (Free Vision)</option>
-    </select>
-  </div>
+  <h1>📷 RKSCAN <span style="font-size:11px;opacity:.7;">Groq AI + Supabase</span></h1>
 </header>
 
 <main style="flex:1; overflow:hidden; position:relative; display:flex; flex-direction:column;">
@@ -97,7 +88,7 @@
     <div class="chat-top">
       <div>
         <strong>🤖 RK AI Assistant</strong>
-        <div class="chat-subtitle">Attach images from gallery or camera. Generates 1 Excel with all products + per-invoice purchase bills.</div>
+        <div class="chat-subtitle">Attach images, extract data with Groq, and match products against your Supabase database.</div>
       </div>
       <div class="chat-top-tools">
         <button class="btn secondary small" id="chatSettingsBtn">⚙ Info</button>
@@ -106,13 +97,9 @@
     </div>
     <div class="chat-layout">
       <div id="chatMessages" aria-live="polite">
-        <div class="chat-bubble assistant"><div class="chat-role">RK AI Assistant</div><div class="chat-body">Hello! Attach your invoice images and press Send. I will process them and generate a single Excel workbook:
+        <div class="chat-bubble assistant"><div class="chat-role">RK AI Assistant</div><div class="chat-body">Hello! Attach your invoice images and press Send.
 <br><br>
-• <strong>Sheet 1 (Products):</strong> Combined extraction, separated by empty rows.
-<br>
-• <strong>Sheets 2+ (Purchase Bills):</strong> Detailed formats for each invoice.
-<br><br>
-Dates → <strong>DD/MM/YYYY</strong>. Amounts → <strong>plain numbers</strong>. Qty ×12, Cost ÷12.</div></div>
+I will extract the data, match it against your Supabase products, and generate the Excel file.</div></div>
       </div>
       <div id="chatResultsWrap" hidden>
         <div id="chatResultsTitle">Extracted rows — no results yet</div>
@@ -144,6 +131,16 @@ Dates → <strong>DD/MM/YYYY</strong>. Amounts → <strong>plain numbers</strong
 
 <script>
 /* =========================================================
+   CONFIGURATION
+   ========================================================= */
+const GROQ_API_KEY = "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"; 
+const SUPABASE_URL = "https://ibmwrbpucbbflnxopfwm.supabase.co"; 
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlibXdyYnB1Y2JiZmxueG9wZndtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NjczNjgsImV4cCI6MjA5ODI0MzM2OH0.hAf6u1Vb8Z45jC2kCLHI3pZvDk2GMNBWY6mfwcCbUts"; 
+
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* =========================================================
    HELPERS
    ========================================================= */
 const $ = (id) => document.getElementById(id);
@@ -163,8 +160,12 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+function normalizeForMatch(s) {
+  return String(s == null ? "" : s).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+}
+
 /* =========================================================
-   DATE FORMATTER: force DD/MM/YYYY
+   DATE FORMATTER
    ========================================================= */
 function formatDateDDMMYYYY(raw) {
   if (!raw) return "";
@@ -302,89 +303,158 @@ async function imageFileToDataUrl(file) {
   return c.toDataURL("image/jpeg",0.88);
 }
 
-function parseModelJson(content) {
-  const raw = String(content || "").trim();
-  if (!raw) throw new Error("The AI returned an empty response.");
-  const candidates = [raw];
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced && fenced[1]) candidates.push(fenced[1].trim());
-  const first = raw.indexOf("{");
-  const last = raw.lastIndexOf("}");
-  if (first >= 0 && last > first) candidates.push(raw.slice(first, last + 1));
-  for (const candidate of candidates) {
-    try { return JSON.parse(candidate); } catch (_) {}
-  }
-  throw new Error("AI response was not valid JSON.");
-}
-
 /* =========================================================
-   ULTIMATE SYSTEM PROMPT (FIXED MATH: PRICE/12 & QTY*12)
+   SYSTEM PROMPT (CSV FORMAT TO SAVE TOKENS)
    ========================================================= */
-const MASTER_SYSTEM = `You are RK Master Invoice AI, an expert data extractor. The user will upload invoice images.
+const MASTER_SYSTEM = `You are RK Master Invoice AI. Extract the invoice data as a simple CSV text, NOT JSON.
 
-Return ONLY valid JSON with this exact shape:
-{
-  "invoices": [
-    {
-      "invoice_number": "string",
-      "supplier": "string (ONLY first 2-3 words, e.g. QI HANG GENERAL)",
-      "date": "string (DD/MM/YYYY)",
-      "invoice_total": "number",
-      "products": [
-        { "remarks": "", "description": "", "group": "", "cost": "", "price": "", "qty": "" }
-      ],
-      "purchase_items": [
-        { "Description": "", "Barcode": "", "Quantity": "", "Unit Price": "", "Line Amount": "", "VAT %": "", "VAT Amount": "", "Item Code": "" }
-      ]
-    }
-  ]
-}
+Output Format:
+INVOICE|{invoice_number}|{supplier_name}|{date_YYYY-MM-DD}|{invoice_total}
+ROW|{model_code}|{qty_x12}|{cost_per_piece}|{price}
+ROW|{model_code}|{qty_x12}|{cost_per_piece}|{price}
 
-CRITICAL RULES:
-1. DO NOT SKIP ROWS. Look at the last row number on the invoice. You MUST output exactly that many items.
-2. MODEL EXTRACTION: Extract ONLY the model code (e.g., "A.2222A-506", "LC3176"). DO NOT include words like "Finger Ring", "Hair Clip", "Rubber".
-3. NUMBERS ONLY: Strip all commas and symbols from numbers.
-
-MATH RULES (STRICT - FOLLOW EXACTLY):
-- QTY: Find the printed Qty on the invoice and MULTIPLY by 12. (Example: Qty=2 becomes 24).
-- COST: Find the printed Unit Price (Rate) on the invoice and DIVIDE by 12. (Example: Price=420 becomes 35.00).
-- PRICE: Keep the printed Unit Price exactly as shown (e.g., 420).
-
-DATA MAPPING:
-
-FOR "products" ARRAY:
-- "description": Model code only.
-- "qty": Printed Qty * 12.
-- "cost": Printed Unit Price / 12.
-- "price": Printed Unit Price (e.g., 420).
-
-FOR "purchase_items" ARRAY:
-- "Description": Model code only.
-- "Quantity": Printed Qty * 12.
-- "Unit Price": The Taxable Amount (Subtotal) for that row.
-- "Line Amount": Same as Unit Price.
-- "VAT %": e.g., 5%.
-- "VAT Amount": e.g., 14.20.
+Rules:
+1. Extract EVERY visible row. Do not skip any.
+2. model_code: ONLY the model number (e.g., "A.2222A-506", "LC3176"). No extra words.
+3. qty_x12: Printed Qty * 12 (Example: 2 becomes 24).
+4. cost_per_piece: Printed Unit Price / 12 (Example: 420 becomes 35.00).
+5. price: Printed Unit Price exactly as shown.
+6. supplier_name: Only first 2-3 words.
+7. date_YYYY-MM-DD: Format as YYYY-MM-DD (e.g., 2026-11-14).
+8. Do not include markdown code blocks, only raw text lines.
 `;
 
 /* =========================================================
-   PUTER AI CALL
+   GROQ API CALL
    ========================================================= */
-async function callPuter(dataUrls, systemPrompt) {
-  const model = $("modelSelect").value;
+async function callGroq(dataUrl, systemPrompt) {
+  const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-  let response;
-  if (dataUrls.length === 1) {
-    response = await puter.ai.chat(systemPrompt, dataUrls[0], { model });
-  } else {
-    const messageContent = [{ type: "text", text: systemPrompt }];
-    dataUrls.forEach(url => messageContent.push({ type: "image_url", image_url: { url } }));
-    response = await puter.ai.chat(
-      [{ role: "user", content: messageContent }],
-      { model }
-    );
+  const content = [
+    { type: "text", text: systemPrompt },
+    { type: "image_url", image_url: { url: dataUrl } }
+  ];
+
+  const payload = {
+    model: "qwen/qwen3.8-27b", 
+    messages: [{ role: "user", content: content }],
+    max_tokens: 1000 
+  };
+
+  const response = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${GROQ_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Groq API Error (${response.status}): ${err}`);
   }
-  return response.message?.content || response.toString();
+
+  const data = await response.json();
+  if (!data.choices || !data.choices.length) throw new Error("No response from Groq.");
+  return data.choices[0].message.content;
+}
+
+/* =========================================================
+   SUPABASE PRODUCT MATCHING & PARSING CSV
+   ========================================================= */
+async function matchProductsToSupabase(invoices) {
+  try {
+    addChatBubble("assistant", `⏳ Loading products from Supabase (this may take a few seconds for 80K+ items)...`);
+    
+    let allProducts = [];
+    let from = 0;
+    const pageSize = 1000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data, error } = await db
+        .from('products')
+        .select('short_description, description')
+        .range(from, from + pageSize - 1);
+
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        allProducts.push(...data);
+        from += pageSize;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    if (allProducts.length === 0) {
+      throw new Error("Supabase returned 0 products. Check your RLS policies.");
+    }
+
+    const productMap = new Map();
+    allProducts.forEach(p => {
+      if (p.short_description) {
+        const key = normalizeForMatch(p.short_description);
+        productMap.set(key, p);
+      }
+    });
+
+    invoices.forEach(inv => {
+      inv.products.forEach(product => {
+        const aiOriginal = product.description;
+        const modelCode = normalizeForMatch(aiOriginal); 
+        
+        let matchedProduct = null;
+        if (productMap.has(modelCode)) {
+          matchedProduct = productMap.get(modelCode);
+        } else {
+          for (const [key, val] of productMap.entries()) {
+            if (key.endsWith(modelCode) || key.includes(modelCode)) {
+              matchedProduct = val;
+              break;
+            }
+          }
+        }
+
+        if (matchedProduct) {
+          product.remarks = "OLD";
+          product.description = matchedProduct.description || matchedProduct.short_description;
+        } else {
+          product.remarks = "";
+          product.description = "/" + aiOriginal;
+        }
+      });
+
+      // AUTO-GENERATE purchase_items from products
+      // We use Cost * Qty to get the Line Total as you requested.
+      inv.purchase_items = inv.products.map(p => {
+        const qty = parseCleanNumber(p.qty) || 0;
+        const cost = parseCleanNumber(p.cost) || 0;
+        
+        // Calculate Line Total (Cost * Qty)
+        const lineTotal = Number((cost * qty).toFixed(2));
+        
+        return {
+          Description: p.description,
+          Barcode: "",
+          Quantity: qty,
+          "Unit Price": cost,          // Cost per piece
+          "Line Amount": lineTotal,    // Cost * Qty
+          "VAT %": "5%",
+          "VAT Amount": Number((lineTotal * 0.05).toFixed(2)),
+          "Item Code": ""
+        };
+      });
+    });
+
+    return invoices;
+  } catch (err) {
+    console.error("Supabase matching error:", err);
+    addChatBubble("assistant", `❌ **Database Error:** ${err.message}`);
+    toast("Database matching failed. See chat for details.", 6000);
+    return invoices;
+  }
 }
 
 /* =========================================================
@@ -405,7 +475,6 @@ async function shareOrDownload(blob, filename) {
       return "shared";
     } catch (err) {
       if (err.name === "AbortError") return "cancelled";
-      console.warn("Share failed, falling back to download", err);
     }
   }
 
@@ -418,7 +487,7 @@ async function shareOrDownload(blob, filename) {
 }
 
 /* =========================================================
-   CHAT UI LOGIC
+   CHAT UI LOGIC & PARSER
    ========================================================= */
 function addChatBubble(role, message) {
   const bubble = document.createElement("div");
@@ -448,52 +517,57 @@ async function sendChatMessage() {
   
   chatState.busy = true; updateChatButtons();
   try {
-    const modelName = $("modelSelect").options[$("modelSelect").selectedIndex].text;
-    addChatBubble("user", `📎 ${files.length} invoice image(s) attached. Processing with ${modelName}...`);
+    addChatBubble("user", `📎 ${files.length} invoice image(s) attached. Processing...`);
 
-    const dataUrls = [];
-    for (const f of files) {
-      dataUrls.push(await imageFileToDataUrl(f));
+    let allInvoices = [];
+    for (let i = 0; i < files.length; i++) {
+      toast(`Processing image ${i+1} of ${files.length}...`, 2000);
+      const dataUrl = await imageFileToDataUrl(files[i]);
+      
+      const rawText = await callGroq(dataUrl, MASTER_SYSTEM);
+      
+      // Parse the CSV output
+      const lines = rawText.split('\n').filter(l => l.trim().length > 0);
+      let currentInv = null;
+
+      lines.forEach(line => {
+        if (line.startsWith('INVOICE|')) {
+          const parts = line.split('|');
+          currentInv = {
+            invoice_number: parts[1] || "",
+            supplier: parts[2] || "",
+            date: formatDateDDMMYYYY(parts[3] || ""),
+            invoice_total: parseCleanNumber(parts[4] || ""),
+            products: [],
+            purchase_items: []
+          };
+          allInvoices.push(currentInv);
+        } else if (line.startsWith('ROW|') && currentInv) {
+          const parts = line.split('|');
+          currentInv.products.push({
+            remarks: "",
+            description: cleanText(parts[1] || ""),
+            group: "",
+            qty: parseCleanNumber(parts[2] || ""),
+            cost: parseCleanNumber(parts[3] || ""),
+            price: parseCleanNumber(parts[4] || "")
+          });
+        }
+      });
+
+      // 3 second delay to avoid rate limit
+      if (i < files.length - 1) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
     }
 
-    const raw = await callPuter(dataUrls, MASTER_SYSTEM);
-    const parsed = parseModelJson(raw);
-    
-    if (!parsed.invoices || !Array.isArray(parsed.invoices)) {
-      throw new Error("AI did not return an 'invoices' array.");
-    }
+    chatState.invoices = allInvoices;
 
-    chatState.invoices = parsed.invoices.map(inv => {
-      const p = (inv.products || []).map(item => ({
-        remarks: item.remarks || "",
-        description: cleanText(item.description || ""), 
-        group: item.group || "",
-        cost: parseCleanNumber(item.cost),   
-        price: parseCleanNumber(item.price),
-        qty: parseCleanNumber(item.qty)
-      }));
-      const pu = (inv.purchase_items || []).map(item => ({
-        Description: cleanText(item.Description || ""),
-        Barcode: item.Barcode || "",
-        Quantity: parseCleanNumber(item.Quantity),
-        "Unit Price": parseCleanNumber(item["Unit Price"]),
-        "Line Amount": parseCleanNumber(item["Line Amount"]),
-        "VAT %": item["VAT %"] || "",
-        "VAT Amount": parseCleanNumber(item["VAT Amount"]),
-        "Item Code": cleanText(item["Item Code"] || "")
-      }));
-      return {
-        invoice_number: inv.invoice_number || "",
-        supplier: inv.supplier || "",
-        date: formatDateDDMMYYYY(inv.date || ""),
-        invoice_total: parseCleanNumber(inv.invoice_total),
-        products: p,
-        purchase_items: pu
-      };
-    });
+    toast("Matching products with Supabase...", 2000);
+    chatState.invoices = await matchProductsToSupabase(chatState.invoices);
 
     const totalProducts = chatState.invoices.reduce((sum, inv) => sum + inv.products.length, 0);
-    addChatBubble("assistant", `✅ Extraction complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s).`);
+    addChatBubble("assistant", `✅ Extraction and matching complete.\n\nFound **${chatState.invoices.length}** invoice(s) and **${totalProducts}** total product row(s).`);
     
     renderPreview();
     $("chatPrompt").value=""; chatState.files=[]; $("chatFiles").value=""; $("cameraInput").value=""; refreshFileLabel();
@@ -522,7 +596,6 @@ function buildMasterExcelBlob() {
   
   const wb = XLSX.utils.book_new();
   
-  // SHEET 1: MASTER PRODUCTS
   const productsAoa = [HEADERS_PRODUCTS];
   chatState.invoices.forEach((inv, idx) => {
     if (inv.products.length) {
@@ -545,7 +618,6 @@ function buildMasterExcelBlob() {
   }
   XLSX.utils.book_append_sheet(wb, wsProducts, "Products (All)");
 
-  // SHEET 2+: PURCHASE BILLS
   chatState.invoices.forEach((inv, idx) => {
     const meta = [
       ["RKSCAN - SUPPLIER PURCHASE BILL"],
@@ -641,7 +713,7 @@ $("chatPrompt").addEventListener("keydown", e => {
 });
 
 $("chatSettingsBtn").addEventListener("click", () => {
-  alert("Free AI via Puter.js.\n\n• GLM 4.6V – Vision model for reading invoices.\n• Perceptron Mk1 – Alternative vision model.\n\nMath Rules:\nQty = Printed Qty * 12\nCost = Printed Unit Price / 12\nPrice = Printed Unit Price\n\nIf a value is unreadable, it is left blank.");
+  alert("🚀 Powered by Groq AI + Supabase.\n\nImages are processed one by one to respect Groq's 1,000 Token OTPM limit.\n\nMath Rules:\n- Qty = Printed Qty * 12\n- Cost = Printed Unit Price / 12\n- Price = Printed Unit Price\n\nMatching Rules (Python Logic):\n- Matched: Remarks = OLD, Description = Full DB Name.\n- Not Matched: Remarks = empty, Description = /ModelNumber.");
 });
 
 $("chatClearBtn").addEventListener("click", () => {
