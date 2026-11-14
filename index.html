@@ -310,17 +310,16 @@ function parseModelJson(content) {
 }
 
 /* =========================================================
-   ULTIMATE SYSTEM PROMPT (STRICT RULES)
+   ULTIMATE SYSTEM PROMPT (STRICT MIXED UNITS & ROWS)
    ========================================================= */
-const MASTER_SYSTEM = `You are RK Master Invoice AI, an expert data extractor.
-The user will upload images of invoices. Analyze them very carefully.
+const MASTER_SYSTEM = `You are RK Master Invoice AI, an expert data extractor. The user will upload invoice images. 
 
 Return ONLY valid JSON with this exact shape:
 {
   "invoices": [
     {
       "invoice_number": "string",
-      "supplier": "string (ONLY first 2-3 words, e.g. HONG TAI GENERAL)",
+      "supplier": "string (ONLY first 2-3 words, e.g. QI HANG GENERAL)",
       "date": "string (DD/MM/YYYY)",
       "invoice_total": "number",
       "products": [
@@ -333,35 +332,37 @@ Return ONLY valid JSON with this exact shape:
   ]
 }
 
-CRITICAL RULE 1: DO NOT SKIP ROWS. If there are 22 rows on the image, you MUST return 22 items in the array. Look carefully at the bottom of the list.
+CRITICAL RULES:
+1. DO NOT SKIP ROWS. Look at the last row number on the invoice (e.g., 26). You MUST output exactly that many items.
+2. MODEL EXTRACTION: Extract ONLY the model code (e.g., "A.2222A-506", "LC3176"). DO NOT include words like "Finger Ring", "Hair Clip", "Rubber".
+3. NUMBERS ONLY: Strip all commas and symbols from numbers.
 
-CRITICAL RULE 2: MODEL NUMBER ONLY. Do NOT include words like "LDS GOWN", "Fashion Boy", "Girls Frok" in the description. ONLY extract the model code (e.g., "LC3176", "322142", "HP67").
+MIXED UNIT LOGIC (PCS, PAC, BOX, DZ):
+- If Unit is "DZ" (Dozen): Total PCS = Qty × 12.
+- If Unit is "BOX": Total PCS = Qty × 24. (Unless a different inner qty is printed).
+- If Unit is "PAC" or "PCS": Total PCS = Qty × 1.
 
-CRITICAL RULE 3: COST CALCULATION (For "products" array).
-Cost means Cost per PCS.
-If the invoice has a "Taxable Amount" (or Line Amount) and "Qty", use this formula: Cost = Taxable Amount / (Quantity in PCS).
-Example 1: Taxable Amount = 608, Qty = 2 DOZ (24 pcs). Cost = 608 / 24 = 25.33.
-Example 2: Taxable Amount = 400, Qty = 2 DOZ (24 pcs). Cost = 400 / 24 = 16.66.
-Example 3: Taxable Amount = 120, Qty = 1 BOX (24 pcs). Cost = 120 / 24 = 5.00.
-If the invoice only gives a Unit Rate (e.g., 320 per DOZ), Cost = 320 / 12 = 26.66.
-DO THE MATH CORRECTLY.
+COST FORMULA:
+Cost = Taxable Amount ÷ Total PCS.
+Example: Qty=2 DZ (24 pcs), Taxable Amount=284.00. Cost = 284 / 24 = 11.83.
+Example: Qty=1 BOX (24 pcs), Taxable Amount=141.00. Cost = 141 / 24 = 5.87.
+Example: Qty=12 PCS, Taxable Amount=85.20. Cost = 85.20 / 12 = 7.10.
 
-RULES FOR "products" ARRAY:
-- "description": ONLY the model code.
-- "qty": Multiply printed DOZ by 12. Box by 24 (or whatever is printed). Output total PCS.
-- "cost": Calculated as above.
-- "price": Keep the printed unit rate (e.g., 320).
+DATA MAPPING:
 
-RULES FOR "purchase_items" ARRAY (Sheet 2+):
-- "Description": Model code only (same as above).
-- "Quantity": Must be the TOTAL PCS. Example: if invoice says 2 DOZ, output 24.
-- "Unit Price": Output the SUBTOTAL / TAXABLE AMOUNT for that row (e.g., 608). Do NOT output the per-piece rate here.
+FOR "products" ARRAY:
+- "description": Model code only.
+- "qty": Total PCS (calculated above).
+- "cost": Calculated Cost per PCS (calculated above).
+- "price": The printed Unit Price (e.g., 142.00).
+
+FOR "purchase_items" ARRAY:
+- "Description": Model code only.
+- "Quantity": Total PCS (calculated above).
+- "Unit Price": The Taxable Amount (Subtotal) for that row (e.g., 284.00).
 - "Line Amount": Same as Unit Price (Taxable Amount).
-- "VAT %": Extract printed VAT (e.g., 5%).
-- "VAT Amount": Extract printed VAT amount.
-- Leave "Barcode" blank.
-
-FINAL RULE: Return ONLY digits for numeric fields. No commas, no currency symbols.
+- "VAT %": e.g., 5%.
+- "VAT Amount": e.g., 14.20.
 `;
 
 /* =========================================================
